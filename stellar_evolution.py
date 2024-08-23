@@ -113,10 +113,53 @@ def fetch_stellar_properties(minit, age_years, directory='MIST_v1.2_feh_p0.00_af
 	Teff, log_g, log_L, R, star_mass = interpolate_stellar_properties(eep_data, age_years)
 
 	return Teff, log_g, log_L, R, star_mass
+
+import numpy as np
+import matplotlib.pyplot as plt
+
+def read_mist_data(filename):
+	"""
+	Reads the MIST data file and extracts relevant parameters.
+	"""
+	# Assuming the file is a CSV or similar format, modify this depending on actual format.
+	# Here we assume it contains columns for initial mass, Teff, and Luminosity
+	data = np.genfromtxt(filename, delimiter=',', names=True)
+	return data
+
+def plot_isochrones(data, mass_range, age):
+	"""
+	Plot the HR diagram with isochrones for a given mass range and age.
+
+	Parameters:
+	- data: The MIST data read from the file.
+	- mass_range: A tuple of (min_mass, max_mass) to filter the data.
+	- age: The age (in log years) for which to plot the isochrones.
+	"""
+	min_mass, max_mass = mass_range
+
+	# Filter the data for the given mass range and age
+	selected_data = data[(data['mass'] >= min_mass) & (data['mass'] <= max_mass) & (data['log_age'] == age)]
+
+	# Plot the HR diagram
+	plt.figure(figsize=(10, 8))
+	for mass in np.unique(selected_data['mass']):
+		star_data = selected_data[selected_data['mass'] == mass]
+		plt.plot(star_data['log_Teff'], star_data['log_L'], label=f'Mass = {mass} M_sun')
+
+	plt.gca().invert_xaxis()  # Effective temperature decreases to the right
+	plt.xlabel(r'$\log T_{eff}$')
+	plt.ylabel(r'$\log L/L_{\odot}$')
+	plt.title(f'HR Diagram with Isochrones (Age: {age} log years)')
+	plt.legend()
+	plt.show()
+
+
 	
 if __name__=='__main__':
 	# Example usage
-	directory = 'MIST_v1.2_feh_p0.00_afe_p0.0_vvcrit0.4_EEPS'  # Replace with the path to your directory
+	directory = 'MIST_v1.2_feh_p0.00_afe_p0.0_vvcrit0.4_EEPS'  # Replace with the path to your directory# Example usage: Plotting isochrones for stars with initial masses between 0.1 and 10 M_sun at log(age) = 9.0
+	data = read_mist_data(filename)
+	plot_isochrones(data, mass_range=(0.1, 10), age=9.0)
 	target_mass = 10.0  # Replace with the target mass in solar masses
 	example_plot(directory, target_mass)
 
