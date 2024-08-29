@@ -391,7 +391,6 @@ def get_spectra(mstar, age, metallicity=0.0, directory='MIST_v1.2_feh_p0.00_afe_
 	
 	# Get stellar properties
 	Teff, log_g, log_L, R, star_mass = fetch_stellar_properties(mstar, age*1e6, directory=directory)
-	print('log Teff:',np.log10(Teff), mstar, age)
 	
 	# Compute the stellar spectrum using Castelli & Kurucz atmosphere models
 	print(Teff, log_g, log_L, R, star_mass)
@@ -469,7 +468,7 @@ def compute_fuv_euv_luminosities(wave, flux, radius):
 	- EUV_photon_counts: EUV photon counts integrated over 10-912 Angstrom.
 	"""
 	# Define wavelength ranges for FUV and EUV (in Angstroms)
-	fuv_range = (912, 2000)
+	fuv_range = (912, 2400)
 	euv_range = (10, 912)
 
 	# Integrate FUV luminosity (erg/s)
@@ -550,8 +549,9 @@ def compute_fluxes_at_coordinate(csv_path, ra_deg, dec_deg, distance_pc):
 	for index, row in df.iterrows():
 		# Convert RA and Dec from J2000 format to degrees
 		star_coord = SkyCoord(row['ra'], row['dec'], unit=(u.hourangle, u.deg))
+		print(star_coord, target_coord)
 		separation = star_coord.separation(target_coord).arcsec * (distance_pc * u.pc).to(u.cm)
-		physical_separation_cm = separation.value
+		physical_separation_cm = separation.value * 4.84814e-6
 		
 		# Compute FUV flux in G0 units
 		fuv_flux_g0 = row['FUV_luminosity'] / (4 * np.pi * physical_separation_cm**2) / 1.6e-3
@@ -574,6 +574,35 @@ def compute_fluxes_at_coordinate(csv_path, ra_deg, dec_deg, distance_pc):
 	return results_df
 
 
+# Calculate FUV flux and EUV counts for each coordinate
+def compute_fluxes_for_all_stars(Ostars_file , discs_file, distance_pc):
+
+	# Load the Pis24_discs.dat file
+	discs_df = pd.read_csv(discs_file, delim_whitespace=True)
+
+	# Convert RA and Dec from J2000 format to degrees
+	discs_df['ra_deg'] = discs_df['ra'].apply(lambda x: SkyCoord(x, discs_df['dec'][discs_df['ra'] == x].values[0], unit=(u.hourangle, u.deg)).ra.degree)
+	discs_df['dec_deg'] = discs_df['dec'].apply(lambda x: SkyCoord(discs_df['ra'][discs_df['dec'] == x].values[0], x, unit=(u.hourangle, u.deg)).dec.degree)
+
+	# Display the first few rows to verify the conversion
+	discs_df[['ra', 'dec', 'ra_deg', 'dec_deg']].head()
+
+	discs_df["FUV_flux_G0"] =  np.nan
+	discs_df[ "EUV_flux_cts"] =np.nan
+
+	for irow, disc_row in discs_df.iterrows():
+		# Extract RA and Dec in degrees
+		ra_deg = disc_row['ra_deg']
+		dec_deg = disc_row['dec_deg']
+		
+		# Compute fluxes for this coordinate
+		results_df = compute_fluxes_at_coordinate(Ostars_file, ra_deg, dec_deg, distance_pc)
+		discs_df['FUV_flux_G0'][irow] = results_df['FUV_flux_G0'].sum()
+		discs_df['EUV_flux_cts'][irow] = results_df['EUV_counts_per_cm2_s'].sum()
+
+	return discs_df
+
+
 if __name__=='__main__':
 	# Example usage
 	directory = 'MIST_v1.2_feh_p0.00_afe_p0.0_vvcrit0.4_EEPS'  
@@ -584,13 +613,10 @@ if __name__=='__main__':
 	else:
 		ma_df = pd.read_csv('mass_age.csv', delimiter=',', header=0)
 	
-	print(ma_df)
 	if not os.path.isfile('mass_age_UV.csv'):
 		maL_df = compute_spectra_for_table(ma_df, directory=directory)
 	else:
 		maL_df = pd.read_csv('mass_age_UV.csv', delimiter=',', header=0)
-	print(maL_df)
-
 
 	# Load the Pis24_Ostars.dat file (assuming it's space-separated or tab-separated)
 	ostars_df = pd.read_csv('Pis24_Ostars.dat', delim_whitespace=True)
@@ -600,10 +626,17 @@ if __name__=='__main__':
 	print(merged_df)
 	# Save the merged DataFrame to a new CSV file 
 	merged_df.to_csv('Pis24_Ostars_wUV.csv', sep=',', index=False)
-	# Example usage:
+
+
+	distance_pc = 2000  # Example distance in parsecs
+	disc_fluxes = compute_fluxes_for_all_stars('Pis24_Ostars_wUV.csv', 'Pis24_discs.dat', distance_pc)
+
+
+	disc_fluxes.to_csv('disc_fluxes.csv', sep=',', index=False)
+
 	# Replace the RA, Dec, and distance with your specific values
-	ra_deg = 260.0  # Example RA in degrees
+	"""ra_deg = 260.0  # Example RA in degrees
 	dec_deg = -34.0  # Example Dec in degrees
 	distance_pc = 2000.0  # Example distance in parsecs
 	results = compute_fluxes_at_coordinate('Pis24_Ostars_wUV.csv', ra_deg, dec_deg, distance_pc)
-	print(results)
+	print(results)"""
