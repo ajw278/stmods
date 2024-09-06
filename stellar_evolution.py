@@ -27,6 +27,47 @@ h = 6.626e-27  # Planck's constant in erg*s
 c = 2.998e10   # Speed of light in cm/s
 k_B = 1.381e-16 # Boltzmann constant in erg/K
 
+
+def find_max_mass_for_age(directory, target_age):
+	"""
+	This function finds the maximum stellar mass for which the MIST stellar model reaches the given age.
+
+	Args:
+		directory (str): The directory where the MIST stellar model files are stored.
+		target_age (float): The age in Myr to check the models against.
+		
+	Returns:
+		max_mass (float): The maximum stellar mass for which the model extends to the target age.
+	"""
+	max_mass = None
+	closest_filename = None
+
+	# Iterate over all files in the directory
+	for filename in os.listdir(directory):
+		if filename.endswith('.track.eep'):
+			try:
+				# Extract mass from the filename (assuming the format '00037M.track.eep')
+				mass_str = filename.split('M')[0]
+				mass = float(mass_str) / 100  # Convert mass string to solar masses
+
+				# Extract the data from the file
+				filepath = os.path.join(directory, filename)
+				data = extract_eep_data(filepath)
+
+				# Check if the stellar track extends to or beyond the target age
+				if data['star_age'].max() >= target_age:
+					if max_mass is None or mass > max_mass:
+						max_mass = mass
+						closest_filename = filename
+
+			except ValueError:
+				continue
+
+	if max_mass is None:
+		raise Warning(f'No stellar model reaches the age of {target_age} Myr.')
+
+	return max_mass, closest_filename
+
 def find_closest_mass_file(directory, target_mass, tol= 0.5):
 	closest_mass = None
 	closest_filename = None
