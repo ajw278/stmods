@@ -13,21 +13,21 @@ import astropy.units as u
 plt.rc('text', usetex=True)
 
 def random_OBstar(massrange=[10., 40.], agerange=[1., 3.], metallicity=0.0, directory='MIST_v1.2_feh_p0.00_afe_p0.0_vvcrit0.4_EEPS'):
-    mass = np.random.uniform() * (massrange[1] - massrange[0]) + massrange[0]
-    age = np.random.uniform() * (agerange[1] - agerange[0]) + agerange[0]
-    wave, flux, radius, atm_mod = se.get_spectra(mass, age, metallicity, directory=directory)
-    fuv, euv = se.compute_fuv_euv_luminosities(wave, flux, radius)
-    return mass, age, fuv, euv
+	mass = np.random.uniform() * (massrange[1] - massrange[0]) + massrange[0]
+	age = np.random.uniform() * (agerange[1] - agerange[0]) + agerange[0]
+	wave, flux, radius, atm_mod = se.get_spectra(mass, age, metallicity, directory=directory)
+	fuv, euv = se.compute_fuv_euv_luminosities(wave, flux, radius)
+	return mass, age, fuv, euv
 
 def compute_flux(luminosity, distance_pc):
-    """
-    Compute the flux experienced by a star in units of erg cm^-2 s^-1 or counts cm^-2 s^-1.
-    Luminosity is given in erg s^-1 or counts s^-1.
-    Distance is given in parsecs.
-    """
-    distance_cm = distance_pc * 3.086e18  # Convert distance from parsecs to cm
-    flux = luminosity / (4 * np.pi * distance_cm**2)
-    return flux
+	"""
+	Compute the flux experienced by a star in units of erg cm^-2 s^-1 or counts cm^-2 s^-1.
+	Luminosity is given in erg s^-1 or counts s^-1.
+	Distance is given in parsecs.
+	"""
+	distance_cm = distance_pc * 3.086e18  # Convert distance from parsecs to cm
+	flux = luminosity / (4 * np.pi * distance_cm**2)
+	return flux
 
 def assign_galactic_coordinates(rstars, ref_coord):
 	"""
@@ -60,37 +60,143 @@ def assign_galactic_coordinates(rstars, ref_coord):
 
 	# Extract RA, Dec, and parallax
 	ra = new_coords_icrs.ra
+	print(ra)
 	dec = new_coords_icrs.dec
 	parallax = new_coords_icrs.distance.to(u.pc).to(u.mas, equivalencies=u.parallax())
-	return ra, dec, parallax.value
+	print(dir(ra), dir(dec))
+	return ra.deg, dec.deg, parallax.value
 
 def generate_plummer_sphere(nstar, a):
-    """
-    Generates random positions for nstar stars from a Plummer sphere distribution.
-    
-    Parameters:
-    - nstar: Number of stars to generate.
-    - a: Scale parameter of the Plummer sphere.
-    
-    Returns:
-    - rstars: Array of shape (nstar, 3) containing the x, y, z positions of the stars.
-    """
-    # Randomly generate positions in spherical coordinates
-    r = a * (np.random.random(nstar) ** (-2/3) - 1) ** (-0.5)
-    theta = np.arccos(2 * np.random.random(nstar) - 1)
-    phi = 2 * np.pi * np.random.random(nstar)
-    
-    # Convert to Cartesian coordinates
-    x = r * np.sin(theta) * np.cos(phi)
-    y = r * np.sin(theta) * np.sin(phi)
-    z = r * np.cos(theta)
-    
-    # Combine into a single array of shape (nstar, 3)
-    rstars = np.vstack((x, y, z)).T
-    
-    return rstars
+	"""
+	Generates random positions for nstar stars from a Plummer sphere distribution.
 
-def build_uv_cluster(fname='rsnap_3105.npy', ctype='load', aplum=1.0, nplum=400, nOB=3, massrange=[10., 40.], agerange=[1., 3.], metallicity=0.0, directory='MIST_v1.2_feh_p0.00_afe_p0.0_vvcrit0.4_EEPS'):
+	Parameters:
+	- nstar: Number of stars to generate.
+	- a: Scale parameter of the Plummer sphere.
+
+	Returns:
+	- rstars: Array of shape (nstar, 3) containing the x, y, z positions of the stars.
+	"""
+	# Randomly generate positions in spherical coordinates
+	r = a * (np.random.random(nstar) ** (-2/3) - 1) ** (-0.5)
+	theta = np.arccos(2 * np.random.random(nstar) - 1)
+	phi = 2 * np.pi * np.random.random(nstar)
+
+	# Convert to Cartesian coordinates
+	x = r * np.sin(theta) * np.cos(phi)
+	y = r * np.sin(theta) * np.sin(phi)
+	z = r * np.cos(theta)
+
+	# Combine into a single array of shape (nstar, 3)
+	rstars = np.vstack((x, y, z)).T
+
+	return rstars
+
+def calculate_fuv_flux(low_mass_ra, low_mass_dec, low_mass_parallax, ob_ra, ob_dec, ob_parallax, ob_fuv_luminosities):
+	"""
+	Calculate the FUV flux experienced by low-mass stars based on the positions and luminosities of OB stars.
+
+	Parameters:
+	- low_mass_ra, low_mass_dec, low_mass_parallax: RA, Dec, and Parallax of low-mass stars (arrays in degrees and mas).
+	- ob_ra, ob_dec, ob_parallax: RA, Dec, and Parallax of OB stars (arrays in degrees and mas).
+	- ob_fuv_luminosities: Array of FUV luminosities for OB stars (in erg/s).
+
+	Returns:
+	- fuv_flux_low_mass: FUV flux experienced by each low-mass star (array in erg/s/cm^2).
+	"""
+
+	print(low_mass_ra)
+
+	# Convert RA, Dec, and Parallax to SkyCoord objects (for low-mass and OB stars)
+	low_mass_coords = SkyCoord(ra=low_mass_ra*u.deg, dec=low_mass_dec*u.deg, 
+								distance=(1.0 / low_mass_parallax) * u.kpc, frame='icrs')
+	
+
+	ob_coords = SkyCoord(ra=ob_ra*u.deg, dec=ob_dec*u.deg, 
+							distance=(1.0 / ob_parallax) * u.kpc, frame='icrs')
+
+	# Initialize array to store FUV flux for each low-mass star
+	fuv_flux_low_mass = np.zeros(len(low_mass_ra))
+
+	# Loop over each OB star and calculate its contribution to FUV flux for each low-mass star
+	for i, (ob_coord, ob_fuv_luminosity) in enumerate(zip(ob_coords, ob_fuv_luminosities)):
+		
+		print(low_mass_coords)
+		# Calculate the distance between the OB star and each low-mass star
+		distances = ob_coord.separation_3d(low_mass_coords).to(u.cm)
+		print(distances)
+		
+		# Calculate the FUV flux contribution from this OB star to each low-mass star
+		fuv_flux_contribution = (ob_fuv_luminosity / (4 * np.pi * distances.value**2))
+		
+		# Sum the flux contributions for each low-mass star
+		fuv_flux_low_mass += fuv_flux_contribution
+
+	return fuv_flux_low_mass
+
+def plot_density_distributions(rstars, nbins=50):
+	"""
+	Plots the surface density along the x-axis and density as a function of cylindrical and spherical radius.
+
+	Parameters:
+	- rstars: Array of star positions (shape: [nstar, 3]).
+	- nbins: Number of bins for the histograms.
+	"""
+	# Extract x, y, z coordinates
+	x, y, z = rstars.T
+
+	# Compute cylindrical radius (R = sqrt(x^2 + y^2)) and spherical radius (r = sqrt(x^2 + y^2 + z^2))
+	R = np.sqrt(x**2 + y**2)
+	r = np.sqrt(x**2 + y**2 + z**2)
+
+	# 1. Plot the surface density along the x-axis
+	plt.figure(figsize=(12, 5))
+
+	# Histogram of star positions along the x-axis
+	plt.subplot(1, 3, 1)
+	plt.hist(x, bins=nbins, density=True)
+	plt.xlabel('x [pc]')
+	plt.ylabel('Linear density [stars/pc]')
+	plt.title('Density along x-axis')
+
+	# 2. Plot the density as a function of cylindrical radius
+	plt.subplot(1, 3, 2)
+	R_bins = np.logspace(np.log10(np.amin(R)),  np.log10(np.max(R)), nbins)
+	R_hist, _ = np.histogram(R, bins=R_bins)
+	R_bin_centers = (R_bins[:-1] + R_bins[1:]) / 2
+	annulus_areas = np.pi * (R_bins[1:]**2 - R_bins[:-1]**2)
+	R_density = R_hist / annulus_areas
+
+	plt.plot(R_bin_centers, R_density)
+	plt.xscale('log')
+	plt.yscale('log')
+	plt.xlim([1e-1, 3.0])
+	plt.ylim([1e-1, 300.0])
+	plt.xlabel('Cylindrical Radius R [pc]')
+	plt.ylabel('Surface density [stars pc$^{-2}$]')
+	plt.title('Surface density')
+
+	# 3. Plot the density as a function of spherical radius
+	plt.subplot(1, 3, 3)
+	r_bins = np.logspace(np.log10(np.amin(r)),  np.log10(np.max(r)), nbins)
+	r_hist, _ = np.histogram(r, bins=r_bins)
+	r_bin_centers = (r_bins[:-1] + r_bins[1:]) / 2
+	shell_volumes = 4/3 * np.pi * (r_bins[1:]**3 - r_bins[:-1]**3)
+	r_density = r_hist / shell_volumes
+
+	plt.plot(r_bin_centers, r_density)
+	plt.xscale('log')
+	plt.yscale('log')
+	plt.xlim([1e-1, 3.0])
+	plt.ylim([1e-1, 300.0])
+	plt.xlabel('Spherical Radius r [pc]')
+	plt.ylabel('Density [stars pc$^{-3}$]')
+	plt.title('Density')
+
+	plt.tight_layout()
+	plt.show()
+
+def build_uv_cluster(fname='rsnap_3105.npy', ctype='load', aplum=1.0, nplum=400, nOB=20, massrange=[4., 20.], agerange=[1., 3.], metallicity=0.0, directory='MIST_v1.2_feh_p0.00_afe_p0.0_vvcrit0.4_EEPS'):
 	if ctype == 'load':
 		rstars = np.load(fname)
 		tag = '_substruct'
@@ -100,12 +206,13 @@ def build_uv_cluster(fname='rsnap_3105.npy', ctype='load', aplum=1.0, nplum=400,
 		rinc = rmag<np.percentile(rmag, 90.0)
 		rstars = rstars[rinc]
 		tag = '_plummer'
+		plot_density_distributions(rstars, nbins=10)
 
 	num_stars, num_dimensions = rstars.shape
 	print(f"Loaded {num_stars} stars with {num_dimensions} dimensions.")
 
 	# Randomly select nOB stars to be OB stars and assign them to positions
-	selected_indices = np.random.choice(num_stars, nOB, replace=False)
+	selected_indices = np.sort(np.random.choice(num_stars, nOB, replace=False))
 
 	# Create a boolean mask where True indicates an OB star
 	is_ob_star = np.zeros(num_stars, dtype=bool)
@@ -156,6 +263,12 @@ def build_uv_cluster(fname='rsnap_3105.npy', ctype='load', aplum=1.0, nplum=400,
 	x, y, z = rstars.T[:]
 
 	# Prepare the non-OB stars data for saving
+	# Now we compute the FUV and EUV fluxes using astrometry for non-OB stars
+	low_fuv_flux_from_astrometry = calculate_fuv_flux(ra[~is_ob_star], dec[~is_ob_star], parallax[~is_ob_star], ra[is_ob_star], dec[is_ob_star], parallax[is_ob_star], OB_fuv_luminosities)
+	low_euv_flux_from_astrometry = calculate_fuv_flux(ra[~is_ob_star], dec[~is_ob_star], parallax[~is_ob_star], ra[is_ob_star], dec[is_ob_star], parallax[is_ob_star], OB_euv_luminosities)
+	low_fuv_flux_from_astrometry /= 1.6e-3
+
+	# Prepare the non-OB stars data for saving
 	low_mass_data = {
 		'RA': ra[~is_ob_star],
 		'Dec': dec[~is_ob_star],
@@ -164,7 +277,9 @@ def build_uv_cluster(fname='rsnap_3105.npy', ctype='load', aplum=1.0, nplum=400,
 		'z': z[~is_ob_star],
 		'Parallax': parallax[~is_ob_star],
 		'True_FUV': total_fuv_flux_G0,
-		'True_EUV': total_euv_flux
+		'True_EUV': total_euv_flux,
+		'FUV_from_astrometry': low_fuv_flux_from_astrometry,
+		'EUV_from_astrometry': low_euv_flux_from_astrometry
 	}
 	low_mass_df = pd.DataFrame(low_mass_data)
 	low_mass_df.to_csv('low_mass_stars'+tag+'.csv', index=False)
@@ -185,7 +300,7 @@ def build_uv_cluster(fname='rsnap_3105.npy', ctype='load', aplum=1.0, nplum=400,
 	high_mass_df = pd.DataFrame(high_mass_data)
 	high_mass_df.to_csv('high_mass_stars'+tag+'.csv', index=False)
 
-	return total_fuv_flux_G0, total_euv_flux, ra.deg, dec.deg, parallax, OB_masses, OB_ages, OB_fuv_luminosities, OB_euv_luminosities, is_ob_star, tag
+	return total_fuv_flux_G0, total_euv_flux, ra, dec, parallax, OB_masses, OB_ages, OB_fuv_luminosities, OB_euv_luminosities, is_ob_star, tag
 
 def plot_star_cluster_wcs(ra, dec, total_fuv_flux_G0, OB_ra, OB_dec, OB_fuv_luminosities, tag=''):
 	"""
@@ -240,6 +355,10 @@ def plot_star_cluster_wcs(ra, dec, total_fuv_flux_G0, OB_ra, OB_dec, OB_fuv_lumi
 	plt.show()
 
 if __name__ == '__main__':
+	total_fuv_flux_G0, total_euv_flux, ra, dec, parallax, OB_masses, OB_ages, OB_fuv_luminosities, OB_euv_luminosities, is_ob_star, tag = build_uv_cluster(ctype='plummer', nplum=400)
+
+	plot_star_cluster_wcs(ra[~is_ob_star], dec[~is_ob_star], total_fuv_flux_G0, ra[is_ob_star], dec[is_ob_star], OB_fuv_luminosities, tag=tag)
+
 	total_fuv_flux_G0, total_euv_flux, ra, dec, parallax, OB_masses, OB_ages, OB_fuv_luminosities, OB_euv_luminosities, is_ob_star, tag = build_uv_cluster(ctype='load')
 
 	plot_star_cluster_wcs(ra[~is_ob_star], dec[~is_ob_star], total_fuv_flux_G0, ra[is_ob_star], dec[is_ob_star], OB_fuv_luminosities, tag=tag)
