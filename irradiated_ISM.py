@@ -5,6 +5,195 @@ import stellar_evolution as se
 import imf_funcs as imff
 import os
 
+import matplotlib.pyplot as plt
+from scipy.spatial import cKDTree
+from mpl_toolkits.mplot3d import Axes3D
+
+from scipy.integrate import simps
+from scipy.interpolate import interp1d
+
+pc2cm = 3.086e18
+Msol2g = 1.988e33
+mH = 1.6738e-24
+mu = 2.3
+
+
+def compute_FUV_icell(ix, iy, iz, x, y, z, rstars, Lfuv, density, ionisation_fraction, N_points=400, NHAV=1.8e21, AFUVAV=2.5):
+
+	# Position of the current grid cell center
+	grid_shape = density.shape
+
+	cell_pos = np.array([x[ix], y[iy], z[iz]])
+
+	# Initialize FUV flux for this cell
+	FUV_flux = 0.
+
+	density_cgs = density*Msol2g/(pc2cm**3)
+
+	# Loop over each OB star
+	for i_star, (star_pos, fuv_lum) in enumerate(zip(rstars, Lfuv)):
+		# Define the line of sight (LOS) from the cell to the star
+		distance_vector = star_pos - cell_pos
+		distance = np.linalg.norm(distance_vector)
+
+		# Discretize the line into N_points along the LOS
+		t = np.linspace(0, 1, N_points)
+		line_points = cell_pos[None, :] + t[:, None] * distance_vector[None, :]
+
+		# Convert line points to indices in the grid
+		ix_line = np.clip(np.searchsorted(x, line_points[:, 0]) - 1, 0, grid_shape[0] - 1)
+		iy_line = np.clip(np.searchsorted(y, line_points[:, 1]) - 1, 0, grid_shape[1] - 1)
+		iz_line = np.clip(np.searchsorted(z, line_points[:, 2]) - 1, 0, grid_shape[2] - 1)
+
+		# Calculate the non-ionized density along the line
+		density_along_line = density_cgs[ix_line, iy_line, iz_line] * (1 - ionisation_fraction[ix_line, iy_line, iz_line])
+
+		# Integrate the surface density along the LOS (using Simpson's rule)
+		dr = distance * pc2cm / N_points
+		surface_density = simps(density_along_line, dx=dr)
+
+		# Compute the extinction factor
+		A_FUV = surface_density *AFUVAV  / (mu * NHAV * mH)
+		extinction = np.exp(-A_FUV)
+
+		# Compute the FUV flux contribution from this star
+		FUV_flux += (fuv_lum / (4 * np.pi * (distance*pc2cm)**2)) * extinction
+	
+	return FUV_flux/1.6e-3
+
+#Default opacity in FUV taken from Draine 2003 -- 10^-21 cm^2/H ~ 260 cm^2 /g (if mu=2.3)
+def compute_FUV_field(rstars, Lfuv, ionisation_fraction, x, y, z, density, NHAV=1.8e21, AFUVAV=2.5, N_points=400):
+	"""
+	Compute the FUV field in the entire grid, taking into account extinction along the path to each OB star.
+
+	Args:
+		rstars (ndarray): Positions of the OB stars, shape (N_stars, 3).
+		Lfuv (ndarray): FUV luminosity of each OB star, shape (N_stars,).
+		ionisation_fraction (ndarray): Ionization fraction grid, same shape as non_irr_ISM.
+		x, y, z (ndarray): 1D arrays of grid cell positions.
+		non_irr_ISM (ndarray): Non-ionized gas density grid.
+		NHAV (float): Extinction per column density of neutral hydrogen (atoms cm^-2 mag^-1)
+		AFUVAV (float): Ratio of FUV extinctioon to visual extinction 
+		N_points (int): Number of points along the line of sight for integration.
+
+	Returns:
+		FUV_grid (ndarray): 3D array representing the FUV field in each grid cell.
+	"""
+	grid_shape = non_irr_ISM.shape
+	FUV_grid = np.zeros(grid_shape)
+
+	# Create 3D meshgrid of cell center positions
+	X, Y, Z = np.meshgrid(x, y, z, indexing='ij')
+
+	ngrid = len(X.flatten())
+	igrid = 0
+
+	# Loop over each cell in the grid
+	for ix in range(grid_shape[0]):
+		for iy in range(grid_shape[1]):
+			for iz in range(grid_shape[2]):
+				FUV_grid[ix, iy, iz] = compute_FUV_icell(ix, iy, iz, x, y, z, rstars, Lfuv, density, ionisation_fraction, N_points=N_points, NHAV=NHAV, AFUVAV=AFUVAV)
+				igrid+=1
+				if igrid%10000 == 0:
+					print('Completed %d/%d grid cell FUV calculation...'%(igrid, ngrid))
+
+
+	return FUV_grid
+
+#N_H/A_V = 1.8  * 10^21 atoms cm^-2 mag^-1
+def compute_fuv_extinction_maps(x, y, z, rstars, Lfuv, ionisation_fraction, density, eps=1e-4, A_V_max=50, N_z_regrid=40, NHAV=1.8e21):
+	"""
+	Compute the FUV extinction maps and regrid the density structure based on extinction.
+
+	Args:
+		x, y, z (ndarray): 1D arrays of grid cell positions.
+		rstars (ndarray): Positions of OB stars, shape (N_stars, 3).
+		Lfuv (ndarray): FUV luminosity of each OB star, shape (N_stars,).
+		ionisation_fraction (ndarray): Ionization fraction grid, same shape as non_irr_ISM.
+		non_irr_ISM (ndarray): Non-ionized gas density grid.
+		eps (float): Small extinction threshold for first cell.
+		A_V_max (float): Maximum extinction allowed.
+		N_z_regrid (int): Number of points in the regridded z-direction.
+		NHAV (float): Extinction per column density of neutral hydrogen (atoms cm^-2 mag^-1)
+
+	Returns:
+		Tuple of 5 2D maps: (A_V_last, FUV_first, FUV_last, z_first, z_last, regridded_density).
+	"""
+	# Initialize the 2D maps
+	A_V_last_map = np.zeros((len(x), len(y)))
+	FUV_first_map = np.zeros((len(x), len(y)))
+	FUV_last_map = np.zeros((len(x), len(y)))
+	z_first_map = np.zeros((len(x), len(y)))
+	z_last_map = np.zeros((len(x), len(y)))
+	regridded_density = np.zeros((len(x), len(y), N_z_regrid))
+
+	density_cgs = density*Msol2g/(pc2cm**3)
+
+	dz = z[1] - z[0]
+
+	ngrid = len(x)*len(y)
+	igrid = 0
+
+	# Loop over each (x, y) column
+	for ix in range(len(x)):
+		for iy in range(len(y)):
+			A_V = 0
+			first_found = False
+			z_first, z_last = None, None
+			density_along_z = []
+			z_positions = []
+			iz_last = -1
+			iz_first = 0
+			# Go through the z-direction (from negative to positive)
+			for iz in range(len(z)):
+				if ionisation_fraction[ix, iy, iz] > 0.999:
+					# Stop when hitting a fully ionized cell
+					break
+
+				# Non-ionized density
+				non_ionized_density = density_cgs[ix, iy, iz] * max(1. - ionisation_fraction[ix, iy, iz],0.0)
+
+				# Add contribution to A_V
+				A_V += non_ionized_density* dz*pc2cm  / (NHAV * mu * mH)
+
+				# Store data once A_V exceeds eps
+				if A_V > eps and not first_found:
+					iz_first= iz
+					first_found = True
+
+				if first_found:
+					# Keep storing density and positions for regridding
+					density_along_z.append(density[ix,iy,iz])
+					z_positions.append(z[iz])
+
+				# If we exceed A_V_max or reach the last z-index, store the last cell info
+				if A_V >= A_V_max or iz == len(z) - 1 or (ionisation_fraction[ix, iy, iz]>0.5 and not first_found):
+					iz_last = iz
+					break
+			
+			z_last = z[iz_last]
+			z_first = z[iz_first]
+			z_last_map[ix, iy] = z_last
+			z_first_map[ix, iy] = z_first
+			FUV_first_map[ix, iy] = compute_FUV_icell(ix, iy, iz_first, x, y, z, rstars, Lfuv, density, ionisation_fraction)
+			FUV_last_map[ix, iy] = max(compute_FUV_icell(ix, iy, iz_last, x, y, z, rstars, Lfuv, density, ionisation_fraction), 1.0)
+			A_V_last_map[ix, iy] = A_V
+
+			# Regrid the density structure between z_first and z_last if the first cell was found
+			if len(z_positions)>1:
+				regrid_z = np.linspace(z_first, z_last, N_z_regrid)
+				f_interp = interp1d(z_positions, np.log10(density_along_z), kind='linear', fill_value='extrapolate')
+				regridded_density[ix, iy, :] = 10.**f_interp(regrid_z)
+			else:
+				regridded_density[ix, iy, :] = density[ix, iy, iz_first]
+			
+
+			igrid+=1
+			if igrid%1000==0:
+				print('Completed the density map for %d/%d grid columns'%(igrid, ngrid))
+
+	return A_V_last_map, FUV_first_map, FUV_last_map, z_first_map, z_last_map, regridded_density
+
 def load_ISM_grid(datafile='grid-1.npy', infofile='grid-info-1.txt'):
 
 	data = np.load(datafile)
@@ -22,10 +211,15 @@ def load_ISM_grid(datafile='grid-1.npy', infofile='grid-info-1.txt'):
 	z_physical = np.linspace(offset_0[2], offset_0[2] + box_length_0, data.shape[2])
 
 
-	return x_physical, y_physical, z_physical, data
+	return x_physical, y_physical, z_physical, np.exp(data)
 
 
-def centre_and_scale(x, y, z, density, Lside = 3.0, Mtot=1e6):
+def sigma_lnrho(lmbda, sig0=1.0, pl=0.5,cs=0.2):
+	sigv = sig0*lmbda**pl
+	siglnr = np.sqrt(np.log(1.+ 0.75*(sigv/cs)**2 ))
+	return siglnr
+
+def centre_and_scale(x, y, z, density, Lside = 3.0, Mtot=1e6, sig0=1.0, pl=0.5, cs=0.2):
 	x -= np.median(x)
 	y -= np.median(y)
 	z -= np.median(z)
@@ -37,28 +231,21 @@ def centre_and_scale(x, y, z, density, Lside = 3.0, Mtot=1e6):
 	Dz = np.amax(z) - np.amin(z)
 	z *= Lside/Dz
 
+	lndensity = np.log(density)
+	lndensity -= np.median(density)
+	lndensity *= sigma_lnrho(Lside, sig0=sig0, pl=pl,cs=cs)/np.std(lndensity)
+
+	density_new = np.exp(lndensity)
+
 	dx = abs(x[1]-x[0])
 	dV = dx*dx*dx
 
-	density *= Mtot/np.sum(density*dV)
+	Mean_density = Mtot/(Lside**3)
 
-	return x, y, z, density
+	density_new *= Mean_density/np.mean(density_new)
 
+	return x, y, z, density_new
 
-
-import numpy as np
-import matplotlib.pyplot as plt
-from scipy.spatial import cKDTree
-
-import matplotlib.pyplot as plt
-from mpl_toolkits.mplot3d import Axes3D
-
-
-
-pc2cm = 3.086e18
-Msol2g = 1.988e33
-mH = 1.6738e-24
-mu = 2.3
 
 
 
@@ -113,8 +300,10 @@ def calculate_ionisation_sphere(star_positions, euv_counts, x, y, z, non_irr_ISM
 	grid_positions = np.array(np.meshgrid(x, y, z, indexing="ij")).reshape(3, -1).T  # (Nx * Ny * Nz, 3)
 	tree = cKDTree(grid_positions)  # KDTree for efficient cell finding
 
+
 	# Loop through each star starting from the most EUV luminous
 	for i, (star_pos, euv) in enumerate(zip(star_positions, euv_counts)):
+		print('i star %d , euv = %.2E'%(i, euv))
 		remaining_photons = np.ones(N_res, dtype=float) * (euv / N_res)  # Initialize photons per point on sphere
 		radius = cell_size/2  # Start with a radius equal to one cell size
 
@@ -252,7 +441,46 @@ def calculate_ionisation_sphere(star_positions, euv_counts, x, y, z, non_irr_ISM
 	return ionisation_fraction
 
 
-def build_irradiated_ISM(ascale=1.0, sfactor=5.0, age=5.0, mOB_min=20., metallicity=0.0, Mtot=1e5, Mtot_gas=1e5, tag ='', directory='MIST_v1.2_feh_p0.00_afe_p0.0_vvcrit0.4_EEPS'):
+def find_ionization_front(ionisation_fraction, x, y, z, plot_3d=False):
+	"""
+	Identify the grid cells on the ionization front surface.
+
+	Args:
+		ionisation_fraction (ndarray): The 3D array of ionization fractions.
+		x, y, z (ndarray): The 1D arrays of grid cell positions.
+		plot_3d (bool): If True, make a 3D scatter plot of the front surface.
+
+	Returns:
+		front_indices (ndarray): The indices of the grid cells on the ionization front.
+	"""
+	# Define the ionization front condition
+	front_condition = (ionisation_fraction > 0.001) & (ionisation_fraction < 0.999)
+
+	# Find the indices of the cells that meet this condition
+	front_indices = np.argwhere(front_condition)
+
+	# Optionally plot the 3D scatter plot of the ionization front surface
+	if plot_3d:
+		fig = plt.figure(figsize=(10, 8))
+		ax = fig.add_subplot(111, projection='3d')
+		
+		# Extract the corresponding grid positions for each index
+		front_positions_x = x[front_indices[:, 0]]
+		front_positions_y = y[front_indices[:, 1]]
+		front_positions_z = z[front_indices[:, 2]]
+		
+		# Plot the scatter plot
+		ax.scatter(front_positions_x, front_positions_y, front_positions_z, color='red', s=1, alpha=0.1)
+		ax.set_xlabel('X (parsecs)')
+		ax.set_ylabel('Y (parsecs)')
+		ax.set_zlabel('Z (parsecs)')
+		plt.title('3D Scatter Plot of Ionization Front Surface')
+		plt.show()
+
+	return front_indices
+
+
+def build_irradiated_ISM(ascale=1.0, sfactor=5.0, age=5.0, mOB_min=20., metallicity=0.0, Mtot=1e5, Mtot_gas=1e4, tag_1 ='', tag_2='', N_res=50000, directory='MIST_v1.2_feh_p0.00_afe_p0.0_vvcrit0.4_EEPS'):
 
 	#Load grid of gas density distribution
 	x, y, z, non_irr_ISM = load_ISM_grid()
@@ -260,8 +488,10 @@ def build_irradiated_ISM(ascale=1.0, sfactor=5.0, age=5.0, mOB_min=20., metallic
 	#Renormalise to the length/density scale given by parameters
 	Lside  = ascale*sfactor*2
 	x, y, z, non_irr_ISM = centre_and_scale(x, y, z, non_irr_ISM, Lside=Lside, Mtot=Mtot_gas)
+	dL = x[1]-x[0]
+	print('Median density:', np.median(non_irr_ISM)*Msol2g/(pc2cm**3))
 
-	if not os.path.isfile('OB_stars_irr_ISM_%d_Myr'%age+tag+'.npy'):
+	if not os.path.isfile('OB_stars_irr_ISM_%d_Myr'%age+tag_1+'.npy'):
 		maxms, _ = se.find_max_mass_for_age(directory, age*1e6)
 		print('Maximum mass at %.1lf Myr = %.2lf Msol'%(age,maxms))
 
@@ -300,31 +530,89 @@ def build_irradiated_ISM(ascale=1.0, sfactor=5.0, age=5.0, mOB_min=20., metallic
 
 		xstars, ystars, zstars = rstars.T
 
-		np.save('OB_stars_irr_ISM_%d_Myr'%age+tag, np.array([xstars, ystars, zstars, mstars, Lfuv, Ndeuv]))
+		np.save('OB_stars_irr_ISM_%d_Myr'%age+tag_1, np.array([xstars, ystars, zstars, mstars, Lfuv, Ndeuv]))
 	else:
-		xstars, ystars, zstars, mstars, Lfuv, Ndeuv = np.load('OB_stars_irr_ISM_%d_Myr'%age+tag+'.npy')
+		xstars, ystars, zstars, mstars, Lfuv, Ndeuv = np.load('OB_stars_irr_ISM_%d_Myr'%age+tag_1+'.npy')
 		rstars = np.array([xstars, ystars, zstars]).T
 	
-	# Run the ionization calculation
-	ionisation_fraction = calculate_ionisation_sphere(rstars, Ndeuv, x, y, z, non_irr_ISM)
+	# Run the ionization calculation 
+	iiter= 0 
+	iiter_max = 1
+	while iiter<iiter_max:
+		if not os.path.isfile('ion_front_%d'%iiter + tag_1+tag_2 +'.npy'):
+				ionisation_fraction = calculate_ionisation_sphere(rstars, Ndeuv, x, y, z, non_irr_ISM, N_res=N_res)
+				np.save('ion_front_%d'%iiter+tag_1+tag_2, ionisation_fraction)
+		else:
+				ionisation_fraction = np.load('ion_front_%d'%iiter + tag_1+tag_2 +'.npy')
 
-	star_z_idx = np.random.choice(np.arange(len(z)))
+		iiter+=1
+
+	"""iifront = find_ionization_front(ionisation_fraction, x, y, z, plot_3d=True)
+
+	mid_idz = len(z)//2
 
 	plt.figure(figsize=(8, 6))
-	plt.imshow(ionisation_fraction[:, :, star_z_idx], extent=[0, Lside, 0, Lside], vmin=0.0, vmax=1.0, origin='lower', cmap='inferno')
+	dl = 0.1
+	plt.contourf(x, y, ionisation_fraction[:, :, mid_idz],  levels=np.arange(0., 1.+dl, dl), origin='lower', cmap='inferno')
+	plt.scatter(xstars, ystars, color='b', marker='*', s=5, edgecolor='k')
 	plt.colorbar(label="Ionisation Fraction")
+	plt.xlabel("X (parsecs)")
+	plt.ylabel("Y (parsecs)")
+	plt.show()"""
+
+	"""
+	if not os.path.isfile('FUV_map'+tag_1+tag_2+'.npy'):
+		FUV_map = compute_FUV_field(rstars, Lfuv, ionisation_fraction, x, y, z, non_irr_ISM)
+		np.save('FUV_map'+tag_1+tag_2, FUV_map)
+	else:
+		FUV_map = np.load('FUV_map'+tag_1+tag_2+'.npy')"""
+
+	if not os.path.isfile('ext_maps'+tag_1+tag_2+'.npy') or not os.path.isfile('dense_regrid'+tag_1+tag_2+'.npy'):
+		A_V_last_map, FUV_first_map, FUV_last_map, z_first_map, z_last_map, regridded_density = compute_fuv_extinction_maps(
+    x, y, z, rstars, Lfuv, ionisation_fraction, non_irr_ISM)
+		np.save('ext_maps'+tag_1+tag_2, np.array([A_V_last_map, FUV_first_map, FUV_last_map, z_first_map, z_last_map]))
+		np.save('dense_regrid'+tag_1+tag_2, regridded_density)
+	else:
+		A_V_last_map, FUV_first_map, FUV_last_map, z_first_map, z_last_map = np.load('ext_maps'+tag_1+tag_2+'.npy')
+		regridded_density = np.load('dense_regrid'+tag_1+tag_2+'.npy')
+	
+	
+	
+	plt.figure(figsize=(5, 4))
+	dA = 0.2
+	FUV_first_map[FUV_first_map<1.0] =1.0
+	FUV_first_map[A_V_last_map<0.01] =-1.0
+	ctf = plt.contourf(x, y, np.log10(FUV_first_map),  levels=np.arange(0., 3.6+dA, dA), origin='lower', cmap='inferno')
+	plt.scatter(xstars, ystars, color='cyan', marker='*', s=30)
+	plt.colorbar(ctf,label="log. FUV flux [$G_0$]")
+	plt.xlabel("X (parsecs)")
+	plt.ylabel("Y (parsecs)")
+	plt.show()
+
+	plt.figure(figsize=(5, 4))
+	dA = 1.0
+	ctf = plt.contourf(x, y, A_V_last_map,  levels=np.arange(0., 20.0+dA, dA), origin='lower', cmap='inferno')
+	plt.scatter(xstars, ystars, color='b', marker='*', s=30, edgecolor=30)
+	plt.colorbar(ctf,label="Final visual extinction")
 	plt.xlabel("X (parsecs)")
 	plt.ylabel("Y (parsecs)")
 	plt.show()
 
 
-		
+	
 
+
+	
 		
 
 
 
 if __name__=='__main__':
-	build_irradiated_ISM(ascale=1.0, sfactor=5.0, age=5.0, directory='MIST_v1.2_feh_p0.00_afe_p0.0_vvcrit0.4_EEPS')
+	
+	fgas = 1.0
+	Mstars=3.2e4
+	Mgas = Mstars*fgas
+	
+	build_irradiated_ISM(ascale=0.44, sfactor=2.5/0.44, age=5.0, N_res=50000, directory='MIST_v1.2_feh_p0.00_afe_p0.0_vvcrit0.4_EEPS', Mtot=Mstars,  Mtot_gas=Mgas, tag_1='_Wd1', tag_2='_hr_M_%.1e'%Mgas)
 
 

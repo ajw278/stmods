@@ -12,9 +12,16 @@ import astropy.units as u
 
 plt.rc('text', usetex=True)
 
-def random_OBstar(massrange=[10., 40.], agerange=[1., 3.], metallicity=0.0, directory='MIST_v1.2_feh_p0.00_afe_p0.0_vvcrit0.4_EEPS'):
-	mass = np.random.uniform() * (massrange[1] - massrange[0]) + massrange[0]
-	age = np.random.uniform() * (agerange[1] - agerange[0]) + agerange[0]
+def random_OBstar(massrange=[10., 40.], agerange=[1., 3.], metallicity=0.0, directory='MIST_v1.2_feh_p0.00_afe_p0.0_vvcrit0.4_EEPS', mOBfix=None, ageOBfix=None):
+	
+	if mOBfix is None:
+		mass = np.random.uniform() * (massrange[1] - massrange[0]) + massrange[0]
+	else:
+		mass = mOBfix
+	if ageOBfix is None:
+		age = np.random.uniform() * (agerange[1] - agerange[0]) + agerange[0]
+	else:
+		age = ageOBfix
 	wave, flux, radius, atm_mod = se.get_spectra(mass, age, metallicity, directory=directory)
 	fuv, euv = se.compute_fuv_euv_luminosities(wave, flux, radius)
 	return mass, age, fuv, euv
@@ -196,7 +203,7 @@ def plot_density_distributions(rstars, nbins=50):
 	plt.tight_layout()
 	plt.show()
 
-def build_uv_cluster(fname='rsnap_3105.npy', ctype='load', aplum=1.0, nplum=400, nOB=20, massrange=[4., 20.], agerange=[1., 3.], metallicity=0.0, directory='MIST_v1.2_feh_p0.00_afe_p0.0_vvcrit0.4_EEPS'):
+def build_uv_cluster(fname='rsnap_3105.npy', ctype='load', aplum=1.0, nplum=400, nOB=20, mOBfix=None, ageOBfix=None, massrange=[4., 20.], agerange=[1., 3.], metallicity=0.0, directory='MIST_v1.2_feh_p0.00_afe_p0.0_vvcrit0.4_EEPS'):
 	if ctype == 'load':
 		rstars = np.load(fname)
 		tag = '_substruct'
@@ -232,7 +239,7 @@ def build_uv_cluster(fname='rsnap_3105.npy', ctype='load', aplum=1.0, nplum=400,
 	OB_euv_luminosities = []
 
 	for pos in OB_positions:
-		mass, age, fuv_luminosity, euv_luminosity = random_OBstar(massrange, agerange, metallicity, directory)
+		mass, age, fuv_luminosity, euv_luminosity = random_OBstar(massrange, agerange, metallicity, directory, mOBfix=mOBfix, ageOBfix=ageOBfix)
 		
 		# Store OB star properties
 		OB_masses.append(mass)
@@ -355,10 +362,10 @@ def plot_star_cluster_wcs(ra, dec, total_fuv_flux_G0, OB_ra, OB_dec, OB_fuv_lumi
 	plt.show()
 
 if __name__ == '__main__':
-	total_fuv_flux_G0, total_euv_flux, ra, dec, parallax, OB_masses, OB_ages, OB_fuv_luminosities, OB_euv_luminosities, is_ob_star, tag = build_uv_cluster(ctype='plummer', nplum=400)
+	total_fuv_flux_G0, total_euv_flux, ra, dec, parallax, OB_masses, OB_ages, OB_fuv_luminosities, OB_euv_luminosities, is_ob_star, tag = build_uv_cluster(ctype='plummer', nplum=400, nOB=20, mOBfix=15.0, ageOBfix=2.0)
 
 	plot_star_cluster_wcs(ra[~is_ob_star], dec[~is_ob_star], total_fuv_flux_G0, ra[is_ob_star], dec[is_ob_star], OB_fuv_luminosities, tag=tag)
 
-	total_fuv_flux_G0, total_euv_flux, ra, dec, parallax, OB_masses, OB_ages, OB_fuv_luminosities, OB_euv_luminosities, is_ob_star, tag = build_uv_cluster(ctype='load')
+	total_fuv_flux_G0, total_euv_flux, ra, dec, parallax, OB_masses, OB_ages, OB_fuv_luminosities, OB_euv_luminosities, is_ob_star, tag = build_uv_cluster(ctype='load',  nOB=20, mOBfix=15.0, ageOBfix=2.0)
 
 	plot_star_cluster_wcs(ra[~is_ob_star], dec[~is_ob_star], total_fuv_flux_G0, ra[is_ob_star], dec[is_ob_star], OB_fuv_luminosities, tag=tag)
