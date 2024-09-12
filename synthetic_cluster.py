@@ -67,10 +67,9 @@ def assign_galactic_coordinates(rstars, ref_coord):
 
 	# Extract RA, Dec, and parallax
 	ra = new_coords_icrs.ra
-	print(ra)
 	dec = new_coords_icrs.dec
 	parallax = new_coords_icrs.distance.to(u.pc).to(u.mas, equivalencies=u.parallax())
-	print(dir(ra), dir(dec))
+	
 	return ra.deg, dec.deg, parallax.value
 
 def generate_plummer_sphere(nstar, a):

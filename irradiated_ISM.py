@@ -141,6 +141,7 @@ def compute_fuv_extinction_maps(x, y, z, rstars, Lfuv, ionisation_fraction, dens
 			first_found = False
 			z_first, z_last = None, None
 			density_along_z = []
+			AV_along_z = []
 			z_positions = []
 			iz_last = -1
 			iz_first = 0
@@ -159,11 +160,13 @@ def compute_fuv_extinction_maps(x, y, z, rstars, Lfuv, ionisation_fraction, dens
 				# Store data once A_V exceeds eps
 				if A_V > eps and not first_found:
 					iz_first= iz
+					A_V =0.0
 					first_found = True
 
 				if first_found:
 					# Keep storing density and positions for regridding
 					density_along_z.append(density[ix,iy,iz])
+					AV_along_z.append(A_V)
 					z_positions.append(z[iz])
 
 				# If we exceed A_V_max or reach the last z-index, store the last cell info
@@ -184,15 +187,18 @@ def compute_fuv_extinction_maps(x, y, z, rstars, Lfuv, ionisation_fraction, dens
 				regrid_z = np.linspace(z_first, z_last, N_z_regrid)
 				f_interp = interp1d(z_positions, np.log10(density_along_z), kind='linear', fill_value='extrapolate')
 				regridded_density[ix, iy, :] = 10.**f_interp(regrid_z)
+				f_interp = interp1d(z_positions,AV_along_z, kind='linear', fill_value='extrapolate')
+				regridded_AV[ix, iy, :] = f_interp(regrid_z)
 			else:
 				regridded_density[ix, iy, :] = density[ix, iy, iz_first]
+				regridded_AV[ix, iy, :] = np.linspace(0.,A_V, N_z_regrid)
 			
 
 			igrid+=1
 			if igrid%1000==0:
 				print('Completed the density map for %d/%d grid columns'%(igrid, ngrid))
 
-	return A_V_last_map, FUV_first_map, FUV_last_map, z_first_map, z_last_map, regridded_density
+	return A_V_last_map, FUV_first_map, FUV_last_map, z_first_map, z_last_map, regridded_density, regridded_AV
 
 def load_ISM_grid(datafile='grid-1.npy', infofile='grid-info-1.txt'):
 
@@ -568,20 +574,21 @@ def build_irradiated_ISM(ascale=1.0, sfactor=5.0, age=5.0, mOB_min=20., metallic
 		FUV_map = np.load('FUV_map'+tag_1+tag_2+'.npy')"""
 
 	if not os.path.isfile('ext_maps'+tag_1+tag_2+'.npy') or not os.path.isfile('dense_regrid'+tag_1+tag_2+'.npy'):
-		A_V_last_map, FUV_first_map, FUV_last_map, z_first_map, z_last_map, regridded_density = compute_fuv_extinction_maps(
+		A_V_last_map, FUV_first_map, FUV_last_map, z_first_map, z_last_map, regridded_density, regridded_AV = compute_fuv_extinction_maps(
     x, y, z, rstars, Lfuv, ionisation_fraction, non_irr_ISM)
 		np.save('ext_maps'+tag_1+tag_2, np.array([A_V_last_map, FUV_first_map, FUV_last_map, z_first_map, z_last_map]))
 		np.save('dense_regrid'+tag_1+tag_2, regridded_density)
 	else:
 		A_V_last_map, FUV_first_map, FUV_last_map, z_first_map, z_last_map = np.load('ext_maps'+tag_1+tag_2+'.npy')
-		regridded_density = np.load('dense_regrid'+tag_1+tag_2+'.npy')
+		regridded_density, regridded_AV = np.load('dense_regrid'+tag_1+tag_2+'.npy')
 	
 	
 	
 	plt.figure(figsize=(5, 4))
 	dA = 0.2
+	FUV_first_map[FUV_first_map<FUV_last_map] =FUV_last_map[FUV_first_map<FUV_last_map] 
 	FUV_first_map[FUV_first_map<1.0] =1.0
-	FUV_first_map[A_V_last_map<0.01] =-1.0
+	FUV_first_map[A_V_last_map<0.01] = -1.0
 	ctf = plt.contourf(x, y, np.log10(FUV_first_map),  levels=np.arange(0., 3.6+dA, dA), origin='lower', cmap='inferno')
 	plt.scatter(xstars, ystars, color='cyan', marker='*', s=30)
 	plt.colorbar(ctf,label="log. FUV flux [$G_0$]")
@@ -592,7 +599,7 @@ def build_irradiated_ISM(ascale=1.0, sfactor=5.0, age=5.0, mOB_min=20., metallic
 	plt.figure(figsize=(5, 4))
 	dA = 1.0
 	ctf = plt.contourf(x, y, A_V_last_map,  levels=np.arange(0., 20.0+dA, dA), origin='lower', cmap='inferno')
-	plt.scatter(xstars, ystars, color='b', marker='*', s=30, edgecolor=30)
+	plt.scatter(xstars, ystars, color='cyan', marker='*', s=30)
 	plt.colorbar(ctf,label="Final visual extinction")
 	plt.xlabel("X (parsecs)")
 	plt.ylabel("Y (parsecs)")
