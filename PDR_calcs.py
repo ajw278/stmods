@@ -1,13 +1,13 @@
 
 import os
+from definitions import *
 
-CWD = os.getcwd()
-PDR_CDIR = '/home/awinter/PDR1.5.4_210817_rev2095/'
-CHEM_DIR = 'data/Chimie/'
 
-def write_pdr_input_with_density_file(input_filename, density_profile_filename, FUV_front, FUV_back, model_name='test', chem_dir=CHEM_DIR), ifafm=20, densh=1e4, \
-d_sour=0.0, fmrc=10.0, ieqth=1, tgaz=500.0, UV_units='Habing', itrfer=3, jfgkh2=2, vturb=2.0, gratio_0=0.01, cdunit_0=5.8e21, Z=1.0, q_pah=4.6e-2, rgrmin=1e-7, \
-rgrmax=3e-5, F_DUST_P=0, iforh2=0, istic=4, F_W_ALL_IFAF=0, srcpp='O 8 V'):
+
+
+def write_pdr_input(FUV_front, FUV_back, model_name='test', ifisob=0, chem_dir=CHEM_DIR, \
+ifafm=20, densh=1e4, d_sour=0.0, fmrc=10.0, ieqth=1, tgaz=500.0, UV_units='Habing', itrfer=3, jfgkh2=2, vturb=2.0, gratio_0=0.01, \
+cdunit_0=5.8e21, Z=1.0, q_pah=4.6e-2, rgrmin=1e-7, rgrmax=3e-5, F_DUST_P=0, iforh2=0, istic=4, F_W_ALL_IFAF=0, srcpp='O 8 V', input_filename='pdr.in', density_profile_filename=None):
 	"""
 	Writes the input file for the Meudon PDR code, specifying a user-defined density profile.
 
@@ -17,6 +17,9 @@ rgrmax=3e-5, F_DUST_P=0, iforh2=0, istic=4, F_W_ALL_IFAF=0, srcpp='O 8 V'):
 		FUV_front (float): The FUV luminosity at the front side (scaling factor for ISRF).
 		FUV_back (float): The FUV luminosity at the back side (scaling factor for ISRF).
 	"""
+
+
+
 	if UV_units=='Habing':
 		#Convert to Mathis field (see PDR manual -- I have used 1.6e-3 erg cm^2 s^-1 for Habing unit)
 		FUV_back /= (1.92/1.6)
@@ -25,11 +28,11 @@ rgrmax=3e-5, F_DUST_P=0, iforh2=0, istic=4, F_W_ALL_IFAF=0, srcpp='O 8 V'):
 
 	with open(input_filename, 'w') as f:
 		f.write("! Input file for Meudon PDR code with user-defined density profile\n")
-		f.write(f"modele {model_name}")
-		f.write(f"chimie {chem_dir}")
+		f.write(f"modele {model_name}\n")
+		f.write(f"chimie {chem_dir}\n")
 		f.write(f"ifafm {ifafm:d}  ! Number of iterations\n")
-		#f.write(f"AVmax 20.0  ! Maximum extinction\n")
-		#f.write(f"densh {densh:.2e}  ! Maximum extinction\n")
+		f.write(f"AVmax {AVmax:%.2lf} ! Maximum extinction\n")
+		f.write(f"densh {densh:.2e}  ! Constant hydrogen density\n")
 		f.write(f"F_ISRF 1  ! Use the Mathis ISRF\n")
 		f.write(f"radm {FUV_front:.2e}  ! FUV scaling factor for the front side\n")
 		f.write(f"radp {FUV_back:.2e}  ! FUV scaling factor for the back side\n")
@@ -48,9 +51,10 @@ rgrmax=3e-5, F_DUST_P=0, iforh2=0, istic=4, F_W_ALL_IFAF=0, srcpp='O 8 V'):
 		f.write(f"fmrc {fmrc:.2e}  ! Cosmic ray ionisation rate in units of 10^-17 s^-1 -- typical value = 10\n")
 		f.write(f"ieqth {ieqth:d}  ! Thermal balance flag - 0=isothermal, 1=compute T\n")
 		f.write(f"tgaz {tgaz:d}  ! Initial guess (or fixed) gas temperature in K\n")
-		f.write(f"ifisob 1  ! Use user-defined density profile\n")
-		f.write(f"fprofil {density_profile_filename}  ! Path to the user-defined density profile\n")
-		#f.write(f"presse  {presse:%.2e}! Pressure, only for isobaric model\n")
+		f.write(f"ifisob {ifisob:d}  ! Use user-defined density profile\n")
+		if not density_profile_filename is None:
+			f.write(f"fprofil {density_profile_filename}  ! Path to the user-defined density profile\n")
+		f.write(f"presse  {presse:%.2e}! Pressure, only for isobaric model\n")
 		f.write(f"vturb {vturb:.2f} ! Turbulent velocity for line broadening (km/s)\n")
 		f.write(f"itrfer {itrfer:d} ! Radiative transfer method (exact for H - 1 , +H2 - 2, 12CO - 3, ... etc.)\n")
 		f.write(f"jfgkh2 {jfgkh2:d} ! Rotational H2 quantum number (J) below which exact UV radiative transfer is solved in the UV lines\n")
@@ -68,26 +72,129 @@ rgrmax=3e-5, F_DUST_P=0, iforh2=0, istic=4, F_W_ALL_IFAF=0, srcpp='O 8 V'):
 		f.write(f"istic {istic:d} ! H sticking on grains model. Default value is 4.\n")
 		f.write(f"F_W_ALL_IFAF {F_W_ALL_IFAF:d} ! Flag for writing outputs for all simulations\n")
 
+	return input_filename
 
-def write_density_profile(filename, DeltaZ, density):
+def write_density_profile(density_profile, r_non_ionized, av_profile, Temp=500.0, filename='density_profile.pfl'):
+    """
+    Write the density profile to a file that can be used by the Meudon PDR code.
+    
+    Parameters:
+    -----------
+    density_profile : 1D array
+        The density profile along the line of sight (non-ionized region).
+    r_non_ionized : 1D array
+        The radial distances corresponding to the density profile.
+    av_profile : 1D array
+        The visual extinction profile.
+    filename : str
+        The name of the output density profile file.
+    """
+    with open(filename, 'w') as f:
+        f.write(f"{len(r_non_ionized)}\n")  # Number of points in the profile
+        for i in range(len(r_non_ionized)):
+            f.write(f"{av_profile[i]:.3f} {Temp:.1f} {density_profile[i]:.3e}\n")  # A_V, temp (placeholder), density
+    return filename
+
+
+def write_stellar_spectrum(wavelength, flux, filename='stellar_spectrum.dat'):
+    """
+    Write the stellar spectrum file for the Meudon PDR code.
+    
+    Parameters:
+    -----------
+    wavelength : 1D array
+        Wavelengths of the stellar spectrum (in nm).
+    flux : 1D array
+        Flux values (in erg cm^-2 s^-1 nm^-1 sr^-1).
+    filename : str
+        The name of the output spectrum file.
+    """
+    with open(filename, 'w') as f:
+        f.write(f"1.0  # Stellar radius in solar radius\n")  # Placeholder radius
+        f.write(f"10000.0  # Effective temperature in K\n")  # Placeholder temperature
+        f.write(f"{len(wavelength)}  # Number of points\n")
+        f.write("# Wavelength (nm)   Flux (erg cm^-2 s^-1 nm^-1 sr^-1)\n")
+        for wl, fl in zip(wavelength, flux):
+            f.write(f"{wl:.3f} {fl:.3e}\n")
+    return filename
+
+"""
+def gen_PDR(FUV_front, FUV_back, AV_prof, dense_prof, isobaric=False, T=500.0, **kwargs)
+
+	if isobaric:
+		
+		kwargs['ieqth'] = 1 
+		kwargs['AVmax'] = AV_prof[-1]
+		kwargs['ifisob'] = 2
+		if not 'presse' in kwargs:
+			rho = np.mean(dense_prof)
+			nH = rho*Msol2g/(mu * mH * pc2cm**3)
+			kwargs['presse'] = nH*T
+	else:
+		write_density_profile(filename, AV, density_Msolpc, T=500.0)
+"""
+	
+		
+def run_pdr_model(FUV_front, FUV_back, r_non_ionized, density_profile, av_profile, wavelength, flux, 
+					model_name='test_pdr_model', input_filename='pdr.in'):
 	"""
-	Writes a user-defined density profile for the Meudon PDR code.
+	Runs the PDR model by writing necessary input files and running the code.
 
-	Args:
-		filename (str): The name of the density profile file.
-		DeltaZ (float): The thickness of the slab (in parsecs or similar unit).
-		density (float): The constant density in cm^-3.
+	Parameters:
+	-----------
+	FUV_front : float
+		The FUV luminosity at the front.
+	FUV_back : float
+		The FUV luminosity at the back.
+	r_non_ionized : 1D array
+		Radial distances in the non-ionized region.
+	density_profile : 1D array
+		Density profile along the non-ionized region.
+	av_profile : 1D array
+		Visual extinction profile along the line of sight.
+	wavelength : 1D array
+		Wavelengths of the stellar spectrum.
+	flux : 1D array
+		Flux of the stellar spectrum.
+	model_name : str
+		Name of the model.
+	input_filename : str
+		Name of the PDR input file.
+
+	Returns:
+	--------
+	input_filename : str
+		The name of the PDR input file.
 	"""
-	# Number of points in the profile
-	num_points = 100  # Adjust as needed for more or fewer points
-	step_av = DeltaZ / num_points
+	# Step 1: Write the density profile file
+	density_profile_filename = write_density_profile(density_profile, r_non_ionized, av_profile, filename='density_profile.pfl')
 
-	with open(filename, 'w') as f:
-		f.write(f"{num_points}  ! Number of points in the density profile\n")
-		for i in range(num_points):
-			Av = i * step_av
-			temperature = 10.0  # Example constant temperature, modify as needed
-			f.write(f"{Av:.5f} {temperature:.2f} {density:.2e}\n")
+	# Step 2: Write the stellar spectrum file
+	stellar_spectrum_filename = write_stellar_spectrum(wavelength, flux, filename='stellar_spectrum.dat')
+
+	# Step 3: Generate the PDR input file
+	write_pdr_input(FUV_front, FUV_back, model_name=model_name, input_filename=input_filename, 
+					density_profile_filename=density_profile_filename, srcpp=stellar_spectrum_filename)
+
+	return input_filename
+
+import subprocess
+
+def execute_pdr_code(pdr_input_filename):
+	"""
+	Execute the Meudon PDR code.
+
+	Parameters:
+	-----------
+	pdr_input_filename : str
+		The input file for the PDR model.
+	"""
+	result = subprocess.run([PDR_CDIR+'PDR', pdr_input_filename], capture_output=True, text=True)
+	return result.stdout, result.stderr
+
+
+
+
 
 
 if __name__=='__main__':

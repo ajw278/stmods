@@ -12,11 +12,9 @@ from mpl_toolkits.mplot3d import Axes3D
 from scipy.integrate import simps
 from scipy.interpolate import interp1d
 
-pc2cm = 3.086e18
-Msol2g = 1.988e33
-mH = 1.6738e-24
-mu = 2.3
+import PDR_calcs as PDR
 
+from definitions import *
 
 def compute_FUV_icell(ix, iy, iz, x, y, z, rstars, Lfuv, density, ionisation_fraction, N_points=400, NHAV=1.8e21, AFUVAV=2.5):
 
@@ -101,7 +99,7 @@ def compute_FUV_field(rstars, Lfuv, ionisation_fraction, x, y, z, density, NHAV=
 	return FUV_grid
 
 #N_H/A_V = 1.8  * 10^21 atoms cm^-2 mag^-1
-def compute_fuv_extinction_maps(x, y, z, rstars, Lfuv, ionisation_fraction, density, eps=1e-4, A_V_max=50, N_z_regrid=40, NHAV=1.8e21):
+def compute_fuv_extinction_maps(x, y, z, rstars, Lfuv, ionisation_fraction, density, eps=1e-4, A_V_max=60, N_z_regrid=60, NHAV=1.8e21):
 	"""
 	Compute the FUV extinction maps and regrid the density structure based on extinction.
 
@@ -126,6 +124,7 @@ def compute_fuv_extinction_maps(x, y, z, rstars, Lfuv, ionisation_fraction, dens
 	z_first_map = np.zeros((len(x), len(y)))
 	z_last_map = np.zeros((len(x), len(y)))
 	regridded_density = np.zeros((len(x), len(y), N_z_regrid))
+	regridded_AV = np.zeros((len(x), len(y), N_z_regrid))
 
 	density_cgs = density*Msol2g/(pc2cm**3)
 
@@ -137,7 +136,7 @@ def compute_fuv_extinction_maps(x, y, z, rstars, Lfuv, ionisation_fraction, dens
 	# Loop over each (x, y) column
 	for ix in range(len(x)):
 		for iy in range(len(y)):
-			A_V = 0
+			A_V = 0.0
 			first_found = False
 			z_first, z_last = None, None
 			density_along_z = []
@@ -193,7 +192,7 @@ def compute_fuv_extinction_maps(x, y, z, rstars, Lfuv, ionisation_fraction, dens
 				regridded_density[ix, iy, :] = density[ix, iy, iz_first]
 				regridded_AV[ix, iy, :] = np.linspace(0.,A_V, N_z_regrid)
 			
-
+			
 			igrid+=1
 			if igrid%1000==0:
 				print('Completed the density map for %d/%d grid columns'%(igrid, ngrid))
@@ -485,6 +484,128 @@ def find_ionization_front(ionisation_fraction, x, y, z, plot_3d=False):
 
 	return front_indices
 
+def get_profile_along_radial_vector(density_cart, ion_frac_cart, x, y, z, r_array, theta, phi):
+	"""
+	Function to compute density and ionisation fraction profiles along a radial array
+	for constant theta and phi.
+
+	Parameters:
+	-----------
+	density_cart : 3D array
+		The Cartesian grid of density values.
+	ion_frac_cart : 3D array
+		The Cartesian grid of ionisation fraction values.
+	x, y, z : 1D arrays
+		Cartesian grid coordinates.
+	r_array : 1D array
+		Array of radial distances to probe.
+	theta : float
+		Constant polar angle (in radians).
+	phi : float
+		Constant azimuthal angle (in radians).
+
+	Returns:
+	--------
+	r_array : 1D array
+		Array of radial distances.
+	density_profile : 1D array
+		Interpolated density profile along the radial direction.
+	ion_frac_profile : 1D array
+		Interpolated ionisation fraction profile along the radial direction.
+	"""
+
+	# Create interpolators for density and ionization fraction
+	density_interpolator = RegularGridInterpolator((x, y, z), density_cart)
+	ion_frac_interpolator = RegularGridInterpolator((x, y, z), ion_frac_cart)
+
+	# Convert spherical (r_array, theta, phi) to Cartesian coordinates
+	cartesian_coords = spherical_to_cartesian(r_array, theta, phi)
+
+	# Interpolate the density and ionisation fraction at the spherical coordinates
+	density_profile = density_interpolator(cartesian_coords)
+	ion_frac_profile = ion_frac_interpolator(cartesian_coords)
+
+	return r_array, density_profile, ion_frac_profile
+
+def compute_av_profile(density_profile, ion_frac_profile, r_array, wavelength, flux):
+	"""
+	Compute the extinction profile and distance to the star, cutting off ionized cells.
+
+	Parameters:
+	-----------
+	density_profile : 1D array
+		The density profile along the radial direction (in Solar masses / pc^3).
+	ion_frac_profile : 1D array
+		The ionisation fraction profile along the radial direction.
+	r_array : 1D array
+		Radial distances corresponding to the profiles (in parsecs).
+	wavelength : 1D array
+		Wavelengths of the spectrum (not used in calculations but kept for completeness).
+	flux : 1D array
+		Flux of the spectrum (not used in calculations but kept for completeness).
+
+	Returns:
+	--------
+	r_non_ionized : 1D array
+		Radial distances in the non-ionized region.
+	A_V_profile : 1D array
+		Visual extinction profile across the non-ionized region.
+	density_non_ionized : 1D array
+		Density profile in the non-ionized region.
+	star_distance : float
+		The first radial distance at which the ionization fraction drops below 0.5.
+	"""
+
+	# Constants
+	NH_to_AV = 1.8e21  # N_H / A_V in atoms cm^-2 mag^-1
+	AFUV_to_AV = 2.5  # A_FUV / A_V ratio
+	mu = 2.3  # Mean molecular weight of the gas
+	solar_mass_per_pc3_to_atoms_cm3 = 1.989e33 / (3.086e18)**3 / mu / 1.6735575e-24  # Conversion factor
+
+	# Convert density from Solar masses / pc^3 to number density (atoms / cm^3)
+	number_density_profile = density_profile * solar_mass_per_pc3_to_atoms_cm3
+
+	# Step 1: Cut off ionised cells (ionisation fraction > 0.5)
+	non_ionized_mask = ion_frac_profile <= 0.5
+	r_non_ionized = r_array[non_ionized_mask]
+	density_non_ionized = density_profile[non_ionized_mask]
+	number_density_non_ionized = number_density_profile[non_ionized_mask]
+
+	# Step 2: Determine the first non-ionised radius (distance to the star)
+	if np.any(non_ionized_mask):
+		star_distance = r_non_ionized[0]
+	else:
+		star_distance = np.nan  # If all cells are ionised
+
+	# Step 3: Compute the visual extinction A_V across the non-ionized grid
+	# A_V is proportional to the column density, which is the integral of number density
+	A_V_profile = np.zeros_like(r_non_ionized)
+	for i in range(1, len(r_non_ionized)):
+		# Approximate the column density as the integral of n_H * dr
+		dr = r_non_ionized[i] - r_non_ionized[i-1]
+		N_H = number_density_non_ionized[i-1] * dr * 3.086e18  # Convert dr from parsecs to cm
+		A_V_profile[i] = A_V_profile[i-1] + N_H / NH_to_AV
+
+	return r_non_ionized, A_V_profile, density_non_ionized, star_distance
+
+
+
+def calc_temperature(density, ionisation_fraction, x, y, z, wave, flux):
+
+	rgrid = np.linspace(0., np.amax(x), 1000)
+	theta = np.pi/3.
+	phi = np.pi/3.
+
+	
+
+	get_profile_along_radial_vector(density_cart, ion_frac_cart, x, y, z, r_array, theta, phi)
+
+
+
+	compute_av_profile(density_profile, ion_frac_profile, r_array, wavelength, flux)
+	
+
+
 
 def build_irradiated_ISM(ascale=1.0, sfactor=5.0, age=5.0, mOB_min=20., metallicity=0.0, Mtot=1e5, Mtot_gas=1e4, tag_1 ='', tag_2='', N_res=50000, directory='MIST_v1.2_feh_p0.00_afe_p0.0_vvcrit0.4_EEPS'):
 
@@ -497,13 +618,14 @@ def build_irradiated_ISM(ascale=1.0, sfactor=5.0, age=5.0, mOB_min=20., metallic
 	dL = x[1]-x[0]
 	print('Median density:', np.median(non_irr_ISM)*Msol2g/(pc2cm**3))
 
+	maxms, _ = se.find_max_mass_for_age(directory, age*1e6)
+	#Calculate total number of stars
+	mmean = imff.mean_mass(m_min=0.08, m_max=maxms)
+	ntot = Mtot/mmean
 	if not os.path.isfile('OB_stars_irr_ISM_%d_Myr'%age+tag_1+'.npy'):
-		maxms, _ = se.find_max_mass_for_age(directory, age*1e6)
+		
 		print('Maximum mass at %.1lf Myr = %.2lf Msol'%(age,maxms))
 
-		#Calculate total number of stars
-		mmean = imff.mean_mass(m_min=0.08, m_max=maxms)
-		ntot = Mtot/mmean
 
 		#Calculate fraction of IMF in massive stars, and therefore total number
 		fOB = imff.imf_fraction(mOB_min, maxms, m_min=0.08, m_max=maxms)
@@ -573,16 +695,28 @@ def build_irradiated_ISM(ascale=1.0, sfactor=5.0, age=5.0, mOB_min=20., metallic
 	else:
 		FUV_map = np.load('FUV_map'+tag_1+tag_2+'.npy')"""
 
-	if not os.path.isfile('ext_maps'+tag_1+tag_2+'.npy') or not os.path.isfile('dense_regrid'+tag_1+tag_2+'.npy'):
+	"""if not os.path.isfile('ext_maps'+tag_1+tag_2+'.npy') or not os.path.isfile('dense_regrid'+tag_1+tag_2+'.npy'):
 		A_V_last_map, FUV_first_map, FUV_last_map, z_first_map, z_last_map, regridded_density, regridded_AV = compute_fuv_extinction_maps(
     x, y, z, rstars, Lfuv, ionisation_fraction, non_irr_ISM)
 		np.save('ext_maps'+tag_1+tag_2, np.array([A_V_last_map, FUV_first_map, FUV_last_map, z_first_map, z_last_map]))
-		np.save('dense_regrid'+tag_1+tag_2, regridded_density)
+		np.save('dense_regrid'+tag_1+tag_2, regridded_density, regridded_AV)
 	else:
 		A_V_last_map, FUV_first_map, FUV_last_map, z_first_map, z_last_map = np.load('ext_maps'+tag_1+tag_2+'.npy')
-		regridded_density, regridded_AV = np.load('dense_regrid'+tag_1+tag_2+'.npy')
+		regridded_density, regridded_AV = np.load('dense_regrid'+tag_1+tag_2+'.npy')"""
 	
+	wav, flux, Ltot = sc.build_cluster_spectrum(age, 0.1, maxms, int(ntot))
+
+	plt.plot(wav, flux)
+	plt.xscale('log')
+	plt.yscale('log')
+	plt.show()
 	
+
+
+	
+	isel_x = 150
+	isel_y = 150
+
 	
 	plt.figure(figsize=(5, 4))
 	dA = 0.2
@@ -590,6 +724,7 @@ def build_irradiated_ISM(ascale=1.0, sfactor=5.0, age=5.0, mOB_min=20., metallic
 	FUV_first_map[FUV_first_map<1.0] =1.0
 	FUV_first_map[A_V_last_map<0.01] = -1.0
 	ctf = plt.contourf(x, y, np.log10(FUV_first_map),  levels=np.arange(0., 3.6+dA, dA), origin='lower', cmap='inferno')
+	plt.scatter(x[isel_x], y[isel_y], color='pink', s=60)
 	plt.scatter(xstars, ystars, color='cyan', marker='*', s=30)
 	plt.colorbar(ctf,label="log. FUV flux [$G_0$]")
 	plt.xlabel("X (parsecs)")
@@ -600,10 +735,12 @@ def build_irradiated_ISM(ascale=1.0, sfactor=5.0, age=5.0, mOB_min=20., metallic
 	dA = 1.0
 	ctf = plt.contourf(x, y, A_V_last_map,  levels=np.arange(0., 20.0+dA, dA), origin='lower', cmap='inferno')
 	plt.scatter(xstars, ystars, color='cyan', marker='*', s=30)
+	plt.scatter(x[isel_x], y[isel_y], color='pink', s=60)
 	plt.colorbar(ctf,label="Final visual extinction")
 	plt.xlabel("X (parsecs)")
 	plt.ylabel("Y (parsecs)")
 	plt.show()
+
 
 
 	

@@ -7,6 +7,9 @@ import matplotlib.pyplot as plt
 from matplotlib.colors import LogNorm
 from astropy.wcs import WCS
 from astropy.visualization.wcsaxes import SphericalCircle
+from scipy.interpolate import interp1d
+import imf_funcs as imff
+
 
 import astropy.units as u
 
@@ -35,6 +38,77 @@ def compute_flux(luminosity, distance_pc):
 	distance_cm = distance_pc * 3.086e18  # Convert distance from parsecs to cm
 	flux = luminosity / (4 * np.pi * distance_cm**2)
 	return flux
+
+def build_cluster_spectrum(age, m_min, m_max, N_stars, common_wavelength=None, directory='MIST_v1.2_feh_p0.00_afe_p0.0_vvcrit0.4_EEPS', nmasses=100, metallicity=0.0):
+	"""
+	Build the total spectrum for a stellar cluster by summing the spectra of individual stars
+	weighted by the number of stars at each mass, based on the IMF.
+
+	Args:
+		age (float): The age of the stellar population in Myr.
+		metallicity (float): The metallicity of the stellar population.
+		m_min (float): Minimum mass of stars in the population.
+		m_max (float): Maximum mass of stars in the population.
+		N_stars (int): Total number of stars to sample.
+		directory (str): Path to the stellar model spectra.
+
+	Returns:
+		total_wavelength (ndarray): Wavelength array for the total spectrum.
+		total_flux (ndarray): Total flux for the stellar cluster spectrum.
+		bolometric_L (float): Total bolometric luminosity in erg s^-1 .
+	"""
+
+	dlogm = 0.05
+	mcent = np.linspace(np.log10(m_min), np.log10(m_max), nmasses)
+	dlogm = mcent[1]-mcent[0]
+	mbound = np.arange(np.log10(m_min)-dlogm/2., np.log10(m_max)+dlogm*1.5, dlogm)
+	mcent = 10.**mcent
+
+	dm = np.diff(10.**mbound)
+	print(dm)
+
+	weight = imff.imf_piecewise(mcent)*dm
+
+
+	weight /= np.sum(weight)
+	weight *= N_stars
+
+	weight = weight[::-1]
+	mcent = mcent[::-1]
+
+
+	bolometric_L = 0.0
+
+	total_flux = None
+	total_wavelength = None
+
+	# Loop through each star
+	for im, m_star in enumerate(mcent):
+		# Get the spectrum for the star
+		wave, flux, radius, atm_mod = se.get_spectra(m_star, age, metallicity, directory=directory)
+		
+		# Weight the flux by the number of stars in this mass bin
+		star_weight = weight[im]  # Normalization: each star contributes equally
+
+		Lum = np.trapz(flux, wave)
+
+		if common_wavelength is None:
+			common_wavelength = wave
+			interp_flux = flux
+		else:
+			# Interpolate the flux onto the common wavelength grid, assume zero flux outside the star's range
+			f_interp = interp1d(wave, flux, bounds_error=False, fill_value=0)
+			interp_flux = np.zeros_like(common_wavelength)
+			interp_flux = f_interp(common_wavelength)
+
+
+		if total_flux is None:
+			total_flux = star_weight * interp_flux
+		else:
+			total_flux += star_weight * interp_flux  # Add the weighted spectrum
+		bolometric_L += Lum
+
+	return common_wavelength, total_flux, bolometric_L
 
 def assign_galactic_coordinates(rstars, ref_coord):
 	"""
@@ -69,7 +143,7 @@ def assign_galactic_coordinates(rstars, ref_coord):
 	ra = new_coords_icrs.ra
 	dec = new_coords_icrs.dec
 	parallax = new_coords_icrs.distance.to(u.pc).to(u.mas, equivalencies=u.parallax())
-	
+
 	return ra.deg, dec.deg, parallax.value
 
 def generate_plummer_sphere(nstar, a):

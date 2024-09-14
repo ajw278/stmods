@@ -22,12 +22,20 @@ A3 = A2 * (m_boundary2 ** (alpha_3 - alpha_2))  # Continuity at 1.0 M_sun
 
 # Define the piecewise IMF function
 def imf_piecewise(m):
-	if m < m_boundary1:
-		return A1 * m ** -alpha_1
-	elif m_boundary1 <= m < m_boundary2:
-		return A2 * m ** -alpha_2
-	else:
-		return A3 * m ** -alpha_3
+	m = np.array(m, ndmin=1)  # Ensure m is treated as an array
+	result = np.zeros_like(m)
+
+	# Apply the piecewise conditions
+	mask1 = m < m_boundary1
+	mask2 = (m >= m_boundary1) & (m < m_boundary2)
+	mask3 = m >= m_boundary2
+
+	result[mask1] = A1 * m[mask1] ** -alpha_1
+	result[mask2] = A2 * m[mask2] ** -alpha_2
+	result[mask3] = A3 * m[mask3] ** -alpha_3
+
+	# If m was a scalar, return a scalar result
+	return result.item() if result.size == 1 else result
 
 # Function to calculate the fraction of IMF between two masses
 def imf_fraction(m1, m2, m_min=0.08, m_max=50.0):
