@@ -428,13 +428,12 @@ def load_observational_data(file_path):
     
     return extracted_data
 
-def get_spectra(mstar, age, metallicity=0.0, directory='MIST_v1.2_feh_p0.00_afe_p0.0_vvcrit0.4_EEPS'):
+def get_spectra(mstar, age, metallicity=0.0, directory='MIST_v1.2_feh_p0.00_afe_p0.0_vvcrit0.4_EEPS', return_wavunits=False):
 	
 	# Get stellar properties
 	Teff, log_g, log_L, R, star_mass = fetch_stellar_properties(mstar, age*1e6, directory=directory)
 	
 	# Compute the stellar spectrum using Castelli & Kurucz atmosphere models
-	print(Teff, log_g, log_L, R, star_mass)
 	
 	atm_mod = 'Castelli & Kurucz 2004'
 	try:
@@ -464,15 +463,20 @@ def get_spectra(mstar, age, metallicity=0.0, directory='MIST_v1.2_feh_p0.00_afe_
 	
 	Lnorm = Lsol*10.**log_L / Ltot
 
+	print('Wavelength units:', sp.waveunits.name)
+	print('Integrated flux:',Lnorm*Ltot)
 
-	return sp.wave, sp.flux*Lnorm, R*Rsol, atm_mod
+	if return_wavunits:
+		return sp.wave, sp.flux*Lnorm, R*Rsol, atm_mod, sp.waveunits.name 
+	else:
+		return sp.wave, sp.flux*Lnorm, R*Rsol, atm_mod
 
 def compute_luminosity(wave, flux, Rstar, wavelength_start=0.0, wavelength_end = np.inf):
 	"""
 	Compute the luminosity of the star between given wavelengths.
 
 	Parameters:
-	wave (array): Wavelength array in Angstroms.
+	wave (array): Wavelength array in Anroms.
 	flux (array): Flux array in erg/cm^2/s/Å.
 	wavelength_start (float): Starting wavelength in Angstroms.
 	wavelength_end (float): Ending wavelength in Angstroms.

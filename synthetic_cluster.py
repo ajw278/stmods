@@ -39,7 +39,7 @@ def compute_flux(luminosity, distance_pc):
 	flux = luminosity / (4 * np.pi * distance_cm**2)
 	return flux
 
-def build_cluster_spectrum(age, m_min, m_max, N_stars, common_wavelength=None, directory='MIST_v1.2_feh_p0.00_afe_p0.0_vvcrit0.4_EEPS', nmasses=100, metallicity=0.0):
+def build_cluster_spectrum(age, m_min, m_max, N_stars, common_wave=None, directory='MIST_v1.2_feh_p0.00_afe_p0.0_vvcrit0.4_EEPS', nmasses=100, metallicity=0.0):
 	"""
 	Build the total spectrum for a stellar cluster by summing the spectra of individual stars
 	weighted by the number of stars at each mass, based on the IMF.
@@ -53,7 +53,7 @@ def build_cluster_spectrum(age, m_min, m_max, N_stars, common_wavelength=None, d
 		directory (str): Path to the stellar model spectra.
 
 	Returns:
-		total_wavelength (ndarray): Wavelength array for the total spectrum.
+		common_wave (ndarray): Wavelength array for the total spectrum.
 		total_flux (ndarray): Total flux for the stellar cluster spectrum.
 		bolometric_L (float): Total bolometric luminosity in erg s^-1 .
 	"""
@@ -65,7 +65,6 @@ def build_cluster_spectrum(age, m_min, m_max, N_stars, common_wavelength=None, d
 	mcent = 10.**mcent
 
 	dm = np.diff(10.**mbound)
-	print(dm)
 
 	weight = imff.imf_piecewise(mcent)*dm
 
@@ -80,35 +79,36 @@ def build_cluster_spectrum(age, m_min, m_max, N_stars, common_wavelength=None, d
 	bolometric_L = 0.0
 
 	total_flux = None
-	total_wavelength = None
+	common_wave = None
 
 	# Loop through each star
 	for im, m_star in enumerate(mcent):
 		# Get the spectrum for the star
-		wave, flux, radius, atm_mod = se.get_spectra(m_star, age, metallicity, directory=directory)
+		wave, flux, radius, atm_mod, wavunits= se.get_spectra(m_star, age, metallicity, directory=directory, return_wavunits=True)
 		
 		# Weight the flux by the number of stars in this mass bin
 		star_weight = weight[im]  # Normalization: each star contributes equally
+ 
+		Lum = np.trapz(4.*np.pi*radius*radius*flux, wave) # Normalise to give the total energy output from the star
 
-		Lum = np.trapz(flux, wave)
-
-		if common_wavelength is None:
-			common_wavelength = wave
-			interp_flux = flux
+		if common_wave is None:
+			common_wave = wave
+			total_flux = flux*star_weight
+			bolometric_L = star_weight * Lum
 		else:
 			# Interpolate the flux onto the common wavelength grid, assume zero flux outside the star's range
-			f_interp = interp1d(wave, flux, bounds_error=False, fill_value=0)
-			interp_flux = np.zeros_like(common_wavelength)
-			interp_flux = f_interp(common_wavelength)
+			f_interp_old = interp1d(common_wave, total_flux, bounds_error=False, fill_value=0.0)
+			f_interp_new = interp1d(wave, flux, bounds_error=False, fill_value=0.0)
+			new_wave = np.append(common_wave, wave)
+			new_wave = np.sort(np.unique(common_wave))
 
+			total_flux = f_interp_old(new_wave)
+			total_flux += star_weight*f_interp_new(new_wave)
+			common_wave = new_wave
 
-		if total_flux is None:
-			total_flux = star_weight * interp_flux
-		else:
-			total_flux += star_weight * interp_flux  # Add the weighted spectrum
-		bolometric_L += Lum
+			bolometric_L += star_weight * Lum
 
-	return common_wavelength, total_flux, bolometric_L
+	return common_wave, total_flux, bolometric_L, wavunits
 
 def assign_galactic_coordinates(rstars, ref_coord):
 	"""
