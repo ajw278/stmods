@@ -39,6 +39,33 @@ def compute_flux(luminosity, distance_pc):
 	flux = luminosity / (4 * np.pi * distance_cm**2)
 	return flux
 
+
+def build_composite_spectrum(ages, masses, metallicity=0.0, directory='MIST_v1.2_feh_p0.00_afe_p0.0_vvcrit0.4_EEPS'):
+	if len(ages)!=len(masses):
+		raise Warning('Ages and masses do not have same length')
+
+	total_flux = None
+	common_wave = None
+
+	for im, mass in enumerate(masses):
+		wave, flux, radius, atm_mod, wavunits= se.get_spectra(mass, ages[im], metallicity, directory=directory, return_wavunits=True)
+		
+		if common_wave is None:
+			common_wave = wave
+			total_flux = flux
+		else:
+			# Interpolate the flux onto the common wavelength grid, assume zero flux outside the star's range
+			f_interp_old = interp1d(common_wave, total_flux, bounds_error=False, fill_value=0.0)
+			f_interp_new = interp1d(wave, flux, bounds_error=False, fill_value=0.0)
+			new_wave = np.append(common_wave, wave)
+			new_wave = np.sort(np.unique(common_wave))
+
+			total_flux = f_interp_old(new_wave)
+			total_flux += f_interp_new(new_wave)
+			common_wave = new_wave
+	
+	return common_wave, total_flux
+	
 def build_cluster_spectrum(age, m_min, m_max, N_stars, common_wave=None, directory='MIST_v1.2_feh_p0.00_afe_p0.0_vvcrit0.4_EEPS', nmasses=100, metallicity=0.0):
 	"""
 	Build the total spectrum for a stellar cluster by summing the spectra of individual stars

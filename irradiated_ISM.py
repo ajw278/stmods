@@ -18,6 +18,13 @@ import PDR_calcs as PDR
 
 from definitions import *
 
+def surfdense_to_AV(sigma_cgi, NHAV=1.8e21):
+	return sigma_cgi  / (mu * NHAV * mH)
+
+
+def NH_to_AV(NH, NHAV=1.8e21):
+	return NH  / NHAV 
+
 def compute_FUV_icell(ix, iy, iz, x, y, z, rstars, Lfuv, density, ionisation_fraction, N_points=400, NHAV=1.8e21, AFUVAV=2.5):
 
 	# Position of the current grid cell center
@@ -53,7 +60,7 @@ def compute_FUV_icell(ix, iy, iz, x, y, z, rstars, Lfuv, density, ionisation_fra
 		surface_density = simps(density_along_line, dx=dr)
 
 		# Compute the extinction factor
-		A_FUV = surface_density *AFUVAV  / (mu * NHAV * mH)
+		A_FUV = surfdense_to_AV(surface_density, NHAV=1.8e21) 
 		extinction = np.exp(-A_FUV)
 
 		# Compute the FUV flux contribution from this star
@@ -156,7 +163,7 @@ def compute_fuv_extinction_maps(x, y, z, rstars, Lfuv, ionisation_fraction, dens
 				non_ionized_density = density_cgs[ix, iy, iz] * max(1. - ionisation_fraction[ix, iy, iz],0.0)
 
 				# Add contribution to A_V
-				A_V += non_ionized_density* dz*pc2cm  / (NHAV * mu * mH)
+				A_V += surfdense_to_AV(non_ionized_density* dz*pc2cm , NHAV=NHAV) 
 
 				# Store data once A_V exceeds eps
 				if A_V > eps and not first_found:
