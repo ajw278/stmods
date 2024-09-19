@@ -4,6 +4,7 @@ import synthetic_cluster as sc
 import stellar_evolution as se
 import imf_funcs as imff
 import os
+from utilities import *
 
 import matplotlib.pyplot as plt
 from scipy.spatial import cKDTree
@@ -11,6 +12,7 @@ from mpl_toolkits.mplot3d import Axes3D
 
 from scipy.integrate import simps
 from scipy.interpolate import interp1d
+from scipy.interpolate import RegularGridInterpolator
 
 import PDR_calcs as PDR
 
@@ -527,7 +529,7 @@ def get_profile_along_radial_vector(density_cart, ion_frac_cart, x, y, z, r_arra
 
 	return r_array, density_profile, ion_frac_profile
 
-def compute_av_profile(density_profile, ion_frac_profile, r_array, wavelength, flux):
+def compute_av_profile(density_profile, ion_frac_profile, r_array, NHAV = 1.8e21):
 	"""
 	Compute the extinction profile and distance to the star, cutting off ionized cells.
 
@@ -539,10 +541,6 @@ def compute_av_profile(density_profile, ion_frac_profile, r_array, wavelength, f
 		The ionisation fraction profile along the radial direction.
 	r_array : 1D array
 		Radial distances corresponding to the profiles (in parsecs).
-	wavelength : 1D array
-		Wavelengths of the spectrum (not used in calculations but kept for completeness).
-	flux : 1D array
-		Flux of the spectrum (not used in calculations but kept for completeness).
 
 	Returns:
 	--------
@@ -556,23 +554,19 @@ def compute_av_profile(density_profile, ion_frac_profile, r_array, wavelength, f
 		The first radial distance at which the ionization fraction drops below 0.5.
 	"""
 
-	# Constants
-	NH_to_AV = 1.8e21  # N_H / A_V in atoms cm^-2 mag^-1
-	AFUV_to_AV = 2.5  # A_FUV / A_V ratio
-	mu = 2.3  # Mean molecular weight of the gas
 	solar_mass_per_pc3_to_atoms_cm3 = 1.989e33 / (3.086e18)**3 / mu / 1.6735575e-24  # Conversion factor
 
 	# Convert density from Solar masses / pc^3 to number density (atoms / cm^3)
 	number_density_profile = density_profile * solar_mass_per_pc3_to_atoms_cm3
 
 	# Step 1: Cut off ionised cells (ionisation fraction > 0.5)
-	non_ionized_mask = ion_frac_profile <= 0.5
-	r_non_ionized = r_array[non_ionized_mask]
-	density_non_ionized = density_profile[non_ionized_mask]
-	number_density_non_ionized = number_density_profile[non_ionized_mask]
+	i_first_ni = np.where(ion_frac_profile<0.5)[0][0]
+	r_non_ionized = r_array[i_first_ni:]
+	density_non_ionized = density_profile[i_first_ni:]
+	number_density_non_ionized = number_density_profile[i_first_ni:]
 
 	# Step 2: Determine the first non-ionised radius (distance to the star)
-	if np.any(non_ionized_mask):
+	if np.sum(ion_frac_profile<0.5)>0:
 		star_distance = r_non_ionized[0]
 	else:
 		star_distance = np.nan  # If all cells are ionised
@@ -584,37 +578,73 @@ def compute_av_profile(density_profile, ion_frac_profile, r_array, wavelength, f
 		# Approximate the column density as the integral of n_H * dr
 		dr = r_non_ionized[i] - r_non_ionized[i-1]
 		N_H = number_density_non_ionized[i-1] * dr * 3.086e18  # Convert dr from parsecs to cm
-		A_V_profile[i] = A_V_profile[i-1] + N_H / NH_to_AV
+		A_V_profile[i] = A_V_profile[i-1] + N_H / NHAV
 
-	return r_non_ionized, A_V_profile, density_non_ionized, star_distance
+	return r_non_ionized, A_V_profile, number_density_non_ionized, star_distance
 
 
 
-def calc_temperature(density, ionisation_fraction, x, y, z, wave, flux):
+def calc_temperature(density, ionisation_fraction, x, y, z, wave, flux, wl_units='angstrom', rho_floor=1e-6):
 
 	rgrid = np.linspace(0., np.amax(x), 1000)
 	theta = np.pi/3.
 	phi = np.pi/3.
 
-	
+	i_ionised = ionisation_fraction>0.5
 
-	get_profile_along_radial_vector(density_cart, ion_frac_cart, x, y, z, r_array, theta, phi)
+	X, Y, Z = np.meshgrid(x,y,z, indexing='ij')
+
+	xcent = np.median(X[i_ionised])
+	ycent = np.median(Y[i_ionised])
+	zcent = np.median(Z[i_ionised])	
+	x -= xcent
+	y -= ycent
+	z -= zcent
+
+
+	r_arr, rho_arr, if_arr = get_profile_along_radial_vector(density, ionisation_fraction, x, y, z, rgrid, theta, phi)
+	rho_arr *= (1.-if_arr)
+	rho_arr[rho_arr<rho_floor] = rho_floor
 
 
 
-	compute_av_profile(density_profile, ion_frac_profile, r_array, wavelength, flux)
+	r_prof, A_V_prof, nH_prof, star_distance = compute_av_profile(rho_arr, if_arr, r_arr)
+
+	"""print(star_distance)
+
+	plt.plot(r_arr, rho_arr)
+	plt.plot(r_prof, nH_prof)
+	plt.plot(r_arr, if_arr)
+	plt.plot(r_prof, A_V_prof)
+	plt.yscale('log')
+	plt.show()"""
+
+
+	if not star_distance is None:
+		PDR.run_pdr_model_tcalc(1.0, 1.0, star_distance, nH_prof, A_V_prof, wave, flux, 
+					model_name='test_pdr_model', input_filename='pdr.in', wl_units=wl_units)
+
+	exit()
 	
 
 
 
 def build_irradiated_ISM(ascale=1.0, sfactor=5.0, age=5.0, mOB_min=20., metallicity=0.0, Mtot=1e5, Mtot_gas=1e4, tag_1 ='', tag_2='', N_res=50000, directory='MIST_v1.2_feh_p0.00_afe_p0.0_vvcrit0.4_EEPS'):
 
-	#Load grid of gas density distribution
-	x, y, z, non_irr_ISM = load_ISM_grid()
 
-	#Renormalise to the length/density scale given by parameters
-	Lside  = ascale*sfactor*2
-	x, y, z, non_irr_ISM = centre_and_scale(x, y, z, non_irr_ISM, Lside=Lside, Mtot=Mtot_gas)
+	if not os.path.isfile('xyz'+tag_2+'.npy') or not os.path.isfile('density'+tag_2+'.npy'):
+		#Load grid of gas density distribution
+		x, y, z, non_irr_ISM = load_ISM_grid()
+
+		#Renormalise to the length/density scale given by parameters
+		Lside  = ascale*sfactor*2
+		x, y, z, non_irr_ISM = centre_and_scale(x, y, z, non_irr_ISM, Lside=Lside, Mtot=Mtot_gas)
+		np.save('xyz'+tag_2, np.array([x,y,z]))
+		np.save('density'+tag_2, non_irr_ISM)
+	else:
+		x, y, z = np.load('xyz'+tag_2+'.npy')
+		non_irr_ISM = np.load('density'+tag_2+'.npy')
+
 	dL = x[1]-x[0]
 	print('Median density:', np.median(non_irr_ISM)*Msol2g/(pc2cm**3))
 
@@ -625,7 +655,6 @@ def build_irradiated_ISM(ascale=1.0, sfactor=5.0, age=5.0, mOB_min=20., metallic
 	if not os.path.isfile('OB_stars_irr_ISM_%d_Myr'%age+tag_1+'.npy'):
 		
 		print('Maximum mass at %.1lf Myr = %.2lf Msol'%(age,maxms))
-
 
 		#Calculate fraction of IMF in massive stars, and therefore total number
 		fOB = imff.imf_fraction(mOB_min, maxms, m_min=0.08, m_max=maxms)
@@ -704,7 +733,25 @@ def build_irradiated_ISM(ascale=1.0, sfactor=5.0, age=5.0, mOB_min=20., metallic
 		A_V_last_map, FUV_first_map, FUV_last_map, z_first_map, z_last_map = np.load('ext_maps'+tag_1+tag_2+'.npy')
 		regridded_density, regridded_AV = np.load('dense_regrid'+tag_1+tag_2+'.npy')"""
 	
-	wav, flux, Ltot = sc.build_cluster_spectrum(age, 0.1, maxms, int(ntot))
+	wavunits = 'angstrom'
+	if not os.path.isfile('sed_tot_'+wavunits+'_'+tag_1+tag_2+'.npy') or not os.path.isfile('bol_lum'+tag_1+tag_2+'.npy'):
+		wav, flux, Ltot, wavunits_= sc.build_cluster_spectrum(age, 0.1, maxms, int(ntot))
+		if wavunits!=wavunits_:
+			raise Warning('Wavelength units do not match.')
+		#Flux has units erg cm^-2 s^-1 A^-1 sr^-1 
+		#wav has units A
+		#Ltot has units erg s^-1
+		np.save('sed_tot_'+wavunits+'_'+tag_1+tag_2, np.array([wav, flux]))
+		np.save('bol_lum'+tag_1+tag_2, np.array([Ltot]))
+
+	else:
+		wav, flux = np.load('sed_tot_'+wavunits+'_'+tag_1+tag_2+'.npy')
+		Ltot = np.load('bol_lum'+tag_1+tag_2+'.npy')
+	
+	calc_temperature(non_irr_ISM, ionisation_fraction, x, y, z, wav, flux, wl_units='angstrom')
+	
+	print("%.2e"%Ltot)
+
 
 	plt.plot(wav, flux)
 	plt.xscale('log')

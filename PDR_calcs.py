@@ -117,35 +117,6 @@ def write_stellar_spectrum(wavelength, flux, filename='stellar_spectrum.dat'):
     return filename
 
 
-PDR_PATH = '/home/awinter/PDR1.5.4_210817_rev2095/'
-IDAT_PATH = PDR_PATH+'AnalysisTools/IDAT/idat'
-
-def run_idat_extraction(hdf5_file, selection_file, output_file, idat_path=IDAT_PATH):
-		"""
-		Runs IDAT to extract quantities from an HDF5 file and save them as a CSV or ASCII file.
-
-		Args:
-			hdf5_file (str): Path to the input HDF5 file.
-			selection_file (str): Path to the selection file listing the quantities to extract.
-			output_file (str): Path to the output file where the extracted data will be saved.
-			idat_path (str): Path to the IDAT executable (default is './idat').
-		"""
-		# Construct the command
-		command = [idat_path, 'extract', hdf5_file, selection_file, output_file]
-
-		try:
-			# Execute the command
-			result = subprocess.run(command, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-
-			# Output the command results
-			print(f"IDAT Extraction completed. Output saved to {output_file}")
-			print(result.stdout.decode())
-
-		except subprocess.CalledProcessError as e:
-			# Handle any errors during the extraction process
-			print(f"Error during IDAT extraction: {e.stderr.decode()}")
-
-
 
 """
 def gen_PDR(FUV_front, FUV_back, AV_prof, dense_prof, isobaric=False, T=500.0, **kwargs)
@@ -205,9 +176,6 @@ def run_pdr_model_tcalc(FUV_front, FUV_back, r_non_ionized, density_profile, av_
 	dsour= -1.*r_non_ionized
 	avmax = av_profile[-1]
 	ifisob = 1
-
-
-	
 	
 
 	# Step 1: Write the density profile file
