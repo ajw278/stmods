@@ -5,6 +5,7 @@ import csv
 import pandas as pd
 import subprocess
 import shutil
+import matplotlib.pyplot as plt
 
 # Dictionary for molecule names (from filenames)
 molecule_mapping = {
@@ -50,8 +51,6 @@ def wavelength_from_infcol(info_column):
 		# Directly extract the wavelength (in micrometers or microns)
 		wavelength = float(wavelength_info)
 	else:
-		print(info_column)
-		print('GHz' in info_column)
 		raise Warning('No unit given for wavelength')
 	return wavelength
 
@@ -88,14 +87,12 @@ def extract_transitions(data_lines, molecule_name):
 
 
 	if quant_end is None:
-		print(head)
 		raise Warning('No end to the quantum number labels found.')
 
 	# Clean up 'u', 'l' and semicolons, extract the actual quantum labels
 	labs_raw = []
 	for iq in range(quant_start, quant_end):
 		labs_raw.append(header_line[iq])
-	print(labs_raw)
 	quantum_labels = [label.replace('_up', '').replace('_lo', '').replace(';', '').replace('l', '').replace('u', '') for label in labs_raw]
 	add_quantum = [0 for iq in quantum_labels]
 	for iq, qn in enumerate(quantum_labels):
@@ -110,7 +107,17 @@ def extract_transitions(data_lines, molecule_name):
 			quantum_labels[iq] = 'F'
 			add_quantum[iq] =0.5
 
-	print(header_line)
+		if qn=='Ka':
+			quantum_labels[iq] = 'ka'
+		if qn=='Kc':
+			quantum_labels[iq] = 'kc'
+		if qn=='Kb':
+			quantum_labels[iq] = 'kb'
+
+	if molecule_name=='H2O':
+		print(quantum_labels)
+
+
 
 	
 	# Extract upper and lower quantum numbers
@@ -200,9 +207,7 @@ def process_all_files_and_save(pdr_cdir = PDR_CDIR, line_dir=LINE_DIR):
 	# Process each file
 	for file in files:
 		molecule_key = file[5:].split('.')[0]
-		print(molecule_key, file)
 		molecule_name = molecule_mapping.get(molecule_key, molecule_key)
-		print(molecule_name)
 		if not molecule_name in ['H3+']:
 			with open(file, 'r') as f:
 				lines = f.readlines()
@@ -226,13 +231,11 @@ def process_all_files_and_save(pdr_cdir = PDR_CDIR, line_dir=LINE_DIR):
 
 	rows = zip(mols, intensity_strings, wavelengths)
 
-	print(rows)
 
 	with open('all_lines.dat', "w") as f:
 		writer = csv.writer(f)
 		writer.writerow(["Molecule", "IStr", "Wavelength_micron"])
 		for row in rows:
-			print(row,'!!!')
 			writer.writerow(row)
 		
 				
@@ -243,15 +246,13 @@ def process_all_files_and_save(pdr_cdir = PDR_CDIR, line_dir=LINE_DIR):
 		writer = csv.writer(f)
 		writer.writerow(["Molecule", "IStr", "Wavelength_micron"])
 		for row in rows:
-			print('...')
-			print(row)
 			writer.writerow(row)
 
 	return mols, intensity_strings, wavelengths
 
-def get_all_transitions(min_wl, max_wl):
+def get_all_transitions(min_wl, max_wl, reset=True):
 
-	if not os.path.isfile('all_lines.dat') or True:
+	if not os.path.isfile('all_lines.dat') or reset:
 		process_all_files_and_save(pdr_cdir = PDR_CDIR, line_dir=LINE_DIR)
 
 
@@ -306,15 +307,11 @@ def build_final_line_table(line_ifile, outfile='PDR_lineintensities.dat', line_d
 	all_lines_df['IStr_cleaned'] = all_lines_df['IStr'].str.strip()
 
 	# Merge based on the cleaned 'quantity' and 'IStr'
-	merged = pd.merge(all_lines_df, line_intensities_corrected_v2, left_on='IStr_cleaned', right_on='quantity_cleaned', how='inner')
+	merged = pd.merge(all_lines_df, line_intensities, left_on='IStr_cleaned', right_on='quantity_cleaned', how='inner')
 
 	#Final table with the necessary columns
 	final_table = merged[['Molecule', 'IStr_cleaned', 'Wavelength_micron', 'value', 'unit']]
 	final_table.columns = ['Molecule', 'Quantity (IStr)', 'Wavelength_micron', 'Value', 'Unit']
-
-	# Displaying the final table
-	print(final_table.head(10))
-
 	
 	final_table.to_csv(outfile)
 
@@ -322,7 +319,7 @@ def build_final_line_table(line_ifile, outfile='PDR_lineintensities.dat', line_d
 
 
 
-def get_line_intensities(min_wl, max_wl, hdf5_file, datdir=None, search_fname='line_fetch.txt', outfile='line_intensities.dat', idat_path=IDAT_PATH):
+def get_line_intensities(min_wl, max_wl, hdf5_file, datdir=None, search_fname='line_fetch.txt', outfile='line_intensities.dat', idat_path=IDAT_PATH, reset=False):
 
 	cwd= os.getcwd()
 	if not datdir is None:
@@ -333,7 +330,7 @@ def get_line_intensities(min_wl, max_wl, hdf5_file, datdir=None, search_fname='l
 	#'I(continuum - 60 to 200 microns)', 'I(continuum - 25 to 60 microns)', 'I(continuum - 3 to 1000 microns)']
 	
 
-	if not os.path.isfile(outfile):
+	if not os.path.isfile(outfile) or reset:
 		df = get_all_transitions(min_wl, max_wl)
 		Ivals = df['IStr'].astype(str).replace('"', '').replace("'", "")  # Remove quotation marks
 
@@ -349,7 +346,6 @@ def get_line_intensities(min_wl, max_wl, hdf5_file, datdir=None, search_fname='l
 
 
 	if not datdir is None:
-		print(outfile, cwd)
 		shutil.copy(outfile, cwd+'/'+outfile)
 		shutil.copy(fintab_name, cwd+'/'+fintab_name)
 
@@ -357,30 +353,30 @@ def get_line_intensities(min_wl, max_wl, hdf5_file, datdir=None, search_fname='l
 
 	return fintab_name, fintab_df
 
-def get_spectrum(hdf5_file, datdir=None, search_fname='spectrum_fetch.txt', outfile='spectrum.dat', idat_path=IDAT_PATH):
+def get_spectrum(hdf5_file, datdir=None, search_fname='spectrum_fetch.txt', outfile='PDR_spectrum.dat', idat_path=IDAT_PATH):
 
 	cwd= os.getcwd()
 	if not datdir is None:
 		os.chdir(datdir)
 
 
-	with open(search_fname, 'w') as f:
-		f.write('Emerging intensity\nWavelength')
+	if not os.path.isfile(outfile):
+		with open(search_fname, 'w') as f:
+			f.write('Emerging intensity\nWavelength')
 
-	run_idat_extraction(hdf5_file, search_fname, outfile, idat_path=idat_path)
+		run_idat_extraction(hdf5_file, search_fname, outfile, idat_path=idat_path)
 
 	if not datdir is None:
-		print(outfile, cwd)
-		shutil.copy(outfile, cwd)
+		shutil.copy(outfile, cwd+'/'+outfile)
 		os.chdir(cwd)
 	
 	out_df = pd.read_csv(outfile)
 
-	print(out_df)
+	os.chdir(cwd)
 
 	return outfile, out_df
 
-def plot_spectrum(spectrum_file):
+def plot_spectrum(spectrum_file, line_file=None):
 
 	# Read the file, skipping the header lines (marked by '#')
 	data = pd.read_csv(spectrum_file, delim_whitespace=True, comment='#', header=None)
@@ -395,21 +391,39 @@ def plot_spectrum(spectrum_file):
 	# Filtering the data to include only the range between 1 and 25 microns
 	filtered_data = data[(data['Wavelength (µm)'] >= 1) & (data['Wavelength (µm)'] <= 25)]
 
-	# Plotting the zoomed-in data with x-axis in microns and y-axis in renormalized units
+
 	plt.figure(figsize=(10, 6))
 	plt.plot(filtered_data['Wavelength (µm)'], filtered_data['Emerging intensity (erg cm⁻² s⁻¹ µm⁻¹ sr⁻¹)'], color='b', lw=1)
+
+
+	if not line_file is None:
+		line_table = pd.read_csv(line_file, header=0)
+		# Extract the N most prominent lines from the final_table
+		N = 100  # Number of most prominent lines
+		top_N_lines = line_table.nlargest(N, 'Value')
+		# Plot vertical lines for the N most prominent transitions, colored by molecule
+		molecules = top_N_lines['Molecule'].unique()
+		colors = plt.cm.get_cmap('tab10', len(molecules))
+		for i, molecule in enumerate(molecules):
+			print(molecule)
+			molecule_lines = top_N_lines[top_N_lines['Molecule'] == molecule]
+
+			ymax = 2e-3
+			plt.vlines(molecule_lines['Wavelength_micron'], ymin=ymax, ymax=5.*ymax,
+					color=colors(i), label=molecule)
+
 
 	# Log scale for both axes
 	plt.xscale('log')
 	plt.yscale('log')
 
 	# Set the y-axis limits to an appropriate range for visibility
-	plt.ylim(1e-7, 1.5e-3)
+	plt.ylim(3e-6, 5e-3)
 
 	# Labels and title
-	plt.xlabel('Wavelength (µm) [log scale]')
-	plt.ylabel('Emerging intensity (erg cm⁻² s⁻¹ µm⁻¹ sr⁻¹) [log scale]')
-	plt.title('Zoomed-in Spectrum: Emerging Intensity vs Wavelength (1-25 µm, Log-Log Scale)')
+	plt.xlabel('Wavelength [µm]')
+	plt.ylabel('Emerging intensity [erg cm⁻² s⁻¹ µm⁻¹ sr⁻¹]')
+	plt.title('Slab model, 1-25 µm')
 
 	# Display the plot
 	plt.grid(True, which="both", ls="--")
@@ -444,16 +458,10 @@ def run_idat_extraction(hdf5_file, selection_file, output_file, idat_path=IDAT_P
 
 
 
-
-
-	
-
-	
-
 if __name__=='__main__':
 	# Call the function to process all files and save transitions
 	datdir = '/home/awinter/PDR1.5.4_210817_rev2095/out/ExampleDiffuse'
 	hdf5_file = 'ExampleDiffuse_s_20.hdf5'
-	get_line_intensities(5.0, 25.0, hdf5_file, datdir=datdir)
-	exit()
-	get_spectrum(hdf5_file, datdir=datdir)
+	linefile, linedf =get_line_intensities(1.0, 25.0, hdf5_file, datdir=datdir, reset=False)
+	spectfile, specdf = get_spectrum(hdf5_file, datdir=datdir)
+	plot_spectrum(spectfile, line_file=linefile)
