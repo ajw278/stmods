@@ -6,6 +6,7 @@ import pandas as pd
 import subprocess
 import shutil
 import matplotlib.pyplot as plt
+import numpy as np
 
 # Dictionary for molecule names (from filenames)
 molecule_mapping = {
@@ -113,10 +114,6 @@ def extract_transitions(data_lines, molecule_name):
 			quantum_labels[iq] = 'kc'
 		if qn=='Kb':
 			quantum_labels[iq] = 'kb'
-
-	if molecule_name=='H2O':
-		print(quantum_labels)
-
 
 
 	
@@ -340,7 +337,9 @@ def get_line_intensities(min_wl, max_wl, hdf5_file, datdir=None, search_fname='l
 	else:
 		df = pd.read_csv('all_lines.dat')
 
+
 	run_idat_extraction(hdf5_file, search_fname, outfile, idat_path=idat_path)
+
 
 	fintab_name, fintab_df = build_final_line_table(outfile)
 
@@ -370,11 +369,23 @@ def get_spectrum(hdf5_file, datdir=None, search_fname='spectrum_fetch.txt', outf
 		shutil.copy(outfile, cwd+'/'+outfile)
 		os.chdir(cwd)
 	
-	out_df = pd.read_csv(outfile)
-
+	out_df =  pd.read_csv(outfile, delim_whitespace=True, comment='#', header=None)
 	os.chdir(cwd)
 
 	return outfile, out_df
+
+def get_molline_transitions(mol, outfile='every_line.dat', reset=False):
+
+	#cont_bands = ['I(continuum - 200 to 1000 microns)','I(continuum - 60 to 1000 microns)', \
+	#'I(continuum - 60 to 200 microns)', 'I(continuum - 25 to 60 microns)', 'I(continuum - 3 to 1000 microns)']
+	
+	if not os.path.isfile(outfile):
+		df = get_all_transitions(0.0, np.inf)
+		df.to_csv(outfile,  index=False,sep='\t', quoting=csv.QUOTE_NONE)
+	else:
+		df = pd.read_csv(outfile, delimiter='\t')
+	return df[df['Molecule']==mol]
+	
 
 def plot_spectrum(spectrum_file, line_file=None):
 
@@ -405,7 +416,6 @@ def plot_spectrum(spectrum_file, line_file=None):
 		molecules = top_N_lines['Molecule'].unique()
 		colors = plt.cm.get_cmap('tab10', len(molecules))
 		for i, molecule in enumerate(molecules):
-			print(molecule)
 			molecule_lines = top_N_lines[top_N_lines['Molecule'] == molecule]
 
 			ymax = 2e-3
@@ -418,16 +428,31 @@ def plot_spectrum(spectrum_file, line_file=None):
 	plt.yscale('log')
 
 	# Set the y-axis limits to an appropriate range for visibility
-	plt.ylim(3e-6, 5e-3)
+	#plt.ylim(3e-6, 5e-3)
 
 	# Labels and title
-	plt.xlabel('Wavelength [µm]')
-	plt.ylabel('Emerging intensity [erg cm⁻² s⁻¹ µm⁻¹ sr⁻¹]')
-	plt.title('Slab model, 1-25 µm')
+	plt.xlabel('Wavelength [$\mu$m]')
+	plt.ylabel('Emerging intensity [erg cm$^{-2}$ s$^{-1}$ $\mu$m$^{-1}$ sr$^{-1}$]')
+	plt.title('Slab model, 1-25 $\mu$m')
 
 	# Display the plot
 	plt.grid(True, which="both", ls="--")
 	plt.show()
+
+
+def reformat(hdf5_filename):
+	fname_split = hdf5_filename.split('.')
+	if len(fname_split)>2:
+		
+		fname_new = '_'.join([fname_split[isp] for isp in range(len(fname_split)-1)])
+	else:
+		fname_new = fname_split[0]
+		
+	fname_new +='.' + fname_split[-1]
+	return fname_new
+
+	
+
 
 
 
@@ -440,12 +465,19 @@ def run_idat_extraction(hdf5_file, selection_file, output_file, idat_path=IDAT_P
 		output_file (str): Path to the output file where the extracted data will be saved.
 		idat_path (str): Path to the IDAT executable (default is './idat').
 	"""
+
 	# Construct the command
+	hdf5_file = reformat(hdf5_file)
+
+
 	command = [idat_path, 'extract', hdf5_file, selection_file, output_file]
+
+	print(' '.join(command))
 	
 
 	try:
 		# Execute the command
+		print("Attempting extraction...")
 		result = subprocess.run(command, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
 		# Output the command results
@@ -454,9 +486,7 @@ def run_idat_extraction(hdf5_file, selection_file, output_file, idat_path=IDAT_P
 
 	except subprocess.CalledProcessError as e:
 		# Handle any errors during the extraction process
-		print(f"Error during IDAT extraction: {e.stderr.decode()}")
-
-
+		raise Warning(f"Error during IDAT extraction: {e.stderr.decode()}")
 
 if __name__=='__main__':
 	# Call the function to process all files and save transitions

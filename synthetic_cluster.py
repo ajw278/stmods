@@ -48,7 +48,8 @@ def build_composite_spectrum(ages, masses, metallicity=0.0, directory='MIST_v1.2
 	common_wave = None
 
 	for im, mass in enumerate(masses):
-		wave, flux, radius, atm_mod, wavunits= se.get_spectra(mass, ages[im], metallicity, directory=directory, return_wavunits=True)
+		print('Mas ages:', mass, ages[im])
+		wave, flux, radius, atm_mod, wavunits= se.get_spectra(mass, ages[im], metallicity=metallicity, directory=directory, return_wavunits=True)
 		
 		if common_wave is None:
 			common_wave = wave

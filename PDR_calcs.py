@@ -7,7 +7,7 @@ import subprocess
 
 
 def write_pdr_input(FUV_front, FUV_back, model_name='test', ifisob=0, chem_file='ch200224_iso_Mathis.chi', \
-ifafm=20, densh=1e4, d_sour=0.0, fmrc=10.0, ieqth=1, tgaz=500.0, UV_units='Habing', itrfer=3, jfgkh2=2, vturb=2.0, gratio_0=0.01, dsour=0.0, AVmax=20.0, \
+ifafm=20, densh=1e4, d_sour=0.0, fmrc=10.0, ieqth=1, tgaz=500.0, UV_units='Habing', itrfer=3, jfgkh2=2, vturb=2.0, gratio_0=0.01,  AVmax=20.0, \
 cdunit_0=5.8e21, Z=1.0, q_pah=4.6e-2, rgrmin=1e-7, rgrmax=3e-5, F_DUST_P=0, iforh2=0, istic=4, alpgr=3.5, F_W_ALL_IFAF=0, presse=0.0, ichh2 = 2,srcpp='O 8 V', \
 input_filename='pdr.in', density_profile_filename=None, pdr_cdir=PDR_CDIR):
 	"""
@@ -211,7 +211,7 @@ def run_pdr_model_tcalc(FUV_front, FUV_back, r_non_ionized, density_profile=None
 
 	# Step 2: Write the stellar spectrum file
 	if not flux is None:
-		dsour= -1.*r_non_ionized
+		dsour= r_non_ionized
 		if wl_units=='Angstrom':
 			wavelength /= 10.0
 			flux *= 10.0
@@ -221,11 +221,12 @@ def run_pdr_model_tcalc(FUV_front, FUV_back, r_non_ionized, density_profile=None
 		stellar_spectrum_filename = write_stellar_spectrum(wavelength, flux, filename='F_custom.dat', units=wl_units)
 	else:
 		stellar_spectrum_filename = ''
+	
 
 	# Step 3: Generate the PDR input file
 	write_pdr_input(FUV_front, FUV_back, model_name=model_name, input_filename=input_filename, 
 					density_profile_filename=density_profile_filename, srcpp=stellar_spectrum_filename,\
-					dsour=dsour, AVmax = avmax, ifisob=ifisob, densh=nH)
+					d_sour=dsour, AVmax = avmax, ifisob=ifisob, densh=nH)
 
 	
 	os.chdir(PDR_CDIR+'src')
