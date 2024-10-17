@@ -158,18 +158,59 @@ def example_plot(directory, target_mass, stmodsdir=STMODS_DIR):
 	plt.show()
 
 def fetch_stellar_properties(minit, age_years, directory, stmodsdir=STMODS_DIR):
-	closest_filename, closest_mass = find_closest_mass_file(directory, minit, stmodsdir=stmodsdir)
+	if minit>1.4:
+		closest_filename, closest_mass = find_closest_mass_file(directory, minit, stmodsdir=stmodsdir)
+		
+		filepath = os.path.join(stmodsdir+directory, closest_filename)
+		eep_data = extract_eep_data(filepath)
+		print(filepath)
+
+		Teff, log_g, log_L, R, star_mass = interpolate_stellar_properties(eep_data, age_years)
+
+		print('Mass, age, Teff, logL:', minit, age_years, Teff, log_L, R, star_mass)
+		
+
+		return Teff, log_g, log_L, R, star_mass
+	else:
 	
-	filepath = os.path.join(stmodsdir+directory, closest_filename)
-	eep_data = extract_eep_data(filepath)
-	print(filepath)
+		# Load the provided CSV file and skip initial header rows
+		file_path = stmodsdir+'BHAC15_tracks.csv'
+		df_clean = pd.read_csv(file_path, comment='!', delim_whitespace=True)
 
-	Teff, log_g, log_L, R, star_mass = interpolate_stellar_properties(eep_data, age_years)
+		# Add appropriate column headers based on the description given
+		column_names = [
+		    "M/Ms", "log_t", "Teff", "L/Ls", "g", "R/Rs", "log(Li/Li0)", "log_Tc", "log_ROc",
+		    "Mrad", "Rrad", "k2conv", "k2rad"
+		]
+		df_clean.columns = column_names
 
-	print('Mass, age, Teff, logL:', minit, age_years, Teff, log_L, R, star_mass)
-	
+		
+		# Convert the mass column to numeric, forcing errors to NaN (which we will drop)
+		df_clean["M/Ms"] = pd.to_numeric(df_clean["M/Ms"], errors='coerce')
 
-	return Teff, log_g, log_L, R, star_mass
+		# Drop rows where the mass column has NaN (i.e., non-numeric values were present)
+		df_clean_numeric = df_clean.dropna(subset=["M/Ms"])
+
+		
+		# Filter the DataFrame for relevant columns and convert mass and age to log space
+		df_clean_numeric['log_M/Ms'] = np.log10(df_clean_numeric['M/Ms'])
+
+		# Prepare data for interpolation: extract mass, age, and the columns we want to interpolate
+		points = np.array([df_clean_numeric['log_M/Ms'], df_clean_numeric['log_t']]).T
+		teff_values = df_clean_numeric['Teff']
+		logg_values = df_clean_numeric['g']
+		logL_values = df_clean_numeric['L/Ls']
+		radius_values = df_clean_numeric['R/Rs']
+
+		log_mass_target = np.log10(minit)
+		log_age_target = np.log10(age_years)
+		# Perform 2D interpolation using griddata in log space
+		interpolated_teff = griddata(points, teff_values, (log_mass_target, log_age_target), method='linear')
+		interpolated_logg = griddata(points, logg_values, (log_mass_target, log_age_target), method='linear')
+		interpolated_logL = griddata(points, logL_values, (log_mass_target, log_age_target), method='linear')
+		interpolated_radius = griddata(points, radius_values, (log_mass_target, log_age_target), method='linear')
+
+		return interpolated_teff, interpolated_logg, interpolated_logL, interpolated_radius
 
 def find_all_mass_files(directory, stmodsdir=STMODS_DIR):
     """
@@ -460,6 +501,17 @@ def free_fall_velocity(M_star, R_star, r_M):
 def shock_temperature(v_ff):
 	return (3./16.0) * (mu * mH * v_ff**2) / k_B
 
+
+def column_energy_flux(f, R_star, M_star, Mdot_acc, r_M):
+	vff = free_fall_velocity(M_star, R_star, r_M)
+	F = 0.5*Mdot_acc*vff**2
+	F /= f*4.*np.pi*R_star*R_star
+	return F
+
+def coll_temp_approx(Tstar, F):
+	Tcol = ((sig_SB*Tstar**4 + F)/sig_SB)**(1./4.)
+	return Tcol
+
 # Accretion shock luminosity
 def accretion_luminosity(M_star, R_star, M_dot, r_M):
 	return (G * M_star * M_dot) / R_star * (1 - R_star / r_M)
@@ -473,14 +525,12 @@ def magnetospheric_radius(M_star, M_dot, R_star, B=1000.0, xi=0.7):
 	mdm = B*R_star**3
 	return xi*((mdm**4.)/(4.*G*M_star*M_dot**2))**(1./7.)
 
-
-# Total accretion shock spectrum
-def accretion_shock_spectrum(M_star_sol, R_star_sol, M_dot_Msolyr, wavelength_A, f=0.01):
+# Total accretion shock spectrum approximated as by Mendigutia et al. 2011 (actually reference within MDCH04..)
+def accretion_shock_spectrum_approx(M_star_sol, R_star_sol, M_dot_Msolyr, Tstar, wavelength_A, f=0.01):
 
 	M_star = M_star_sol*Msol
 	R_star = R_star_sol*Rsol
 	M_dot = M_dot_Msolyr*Msol/year
-
 
 	r_M = magnetospheric_radius(M_star, M_dot, R_star, B=1000.0, xi=0.7)
 
@@ -492,29 +542,23 @@ def accretion_shock_spectrum(M_star_sol, R_star_sol, M_dot_Msolyr, wavelength_A,
 	print('v_ff (km/s)', v_ff/1e5)
 
 	# Shock temperature
-	T_shock = shock_temperature(v_ff)
+	#T_shock = shock_temperature(v_ff)
+	F = column_energy_flux(f, R_star,  M_star, M_dot, r_M)
+
+	T_coll = coll_temp_approx(Tstar, F)
 
 	# Luminosity from the shock
 	L_acc = accretion_luminosity(M_star, R_star, M_dot, r_M)
 
 	# Filling factor (fraction of the surface covered by accretion)
-	A_shock = f * 4 * np.pi * R_star**2
-
-
+	A_coll = f * 4 * np.pi * R_star**2
 
 	# Spectrum from the shock as a function of wavelength
-	spectrum = shock_flux(wavelength_A, T_shock, A_shock)
+	spectrum = shock_flux(wavelength_A, T_coll, A_coll)
 
+	print('Normalisation:', L_acc / np.trapz(spectrum, wavelength_A))
 	spectrum *= L_acc / np.trapz(spectrum, wavelength_A)
 
-
-	print(spectrum, T_shock, A_shock)
-	print(L_acc)
-	plt.plot(wavelength_A, spectrum)
-	print(np.trapz(spectrum, wavelength_A))
-	plt.xscale('log')
-	plt.yscale('log')
-	plt.show()
 	return spectrum
 
 
@@ -562,13 +606,15 @@ def get_spectra(mstar, age, metallicity=0.0, Mdot_acc=0.0, directory='MIST_v1.2_
 	flux = sp.flux
 	facc = 0.0
 	if Mdot_acc>0.0:
-
-		facc = accretion_shock_spectrum(star_mass, R, Mdot_acc, sp.wave, f=0.1)/(4.*np.pi*R*R*Rsol*Rsol)
-		plt.plot(sp.wave, facc)
+		facc = accretion_shock_spectrum_approx(star_mass, R, Mdot_acc, Teff, sp.wave, f=0.01)/(4.*np.pi*R*R*Rsol*Rsol)
+		"""plt.plot(sp.wave, facc)
 		plt.plot(sp.wave, sp.flux*Lnorm)
+
+		plt.plot(sp.wave, sp.flux*Lnorm+facc, color='k')
 		plt.xscale('log')
 		plt.yscale('log')
-		plt.show()
+		plt.ylim([1e2, 1e7])
+		plt.show()"""
 		
 	
 	#print('Wavelength units:', sp.waveunits.name)
@@ -627,8 +673,8 @@ def compute_fuv_euv_luminosities(wave, flux, radius):
 	- EUV_photon_counts: EUV photon counts integrated over 10-912 Angstrom.
 	"""
 	# Define wavelength ranges for FUV and EUV (in Angstroms)
-	fuv_range = (912, 2400)
-	euv_range = (10, 912)
+	fuv_range = (950.0, 2070.0)
+	euv_range = (10, 950.0)
 
 	# Integrate FUV luminosity (erg/s)
 	FUV_luminosity, _ = compute_luminosity(wave, flux, radius, wavelength_start=fuv_range[0], wavelength_end = fuv_range[1])
@@ -867,22 +913,84 @@ if __name__=='__main__':
 	redo_massage=False
 	redo_massage_UV=True
 	
-	age = 5.0
+	age = 2.0
+	
+	directory =   'MIST_v1.2_feh_p0.00_afe_p0.0_vvcrit0.4_EEPS'
+	mstars  = np.linspace(0.1, 3.0, 50)
+	Teffs = np.zeros(mstars.shape)
+	Rs = np.zeros(mstars.shape)
+	for im, mstar in enumerate(mstars):
+		Teff, log_g, log_L, R, star_mass = fetch_stellar_properties(mstar, age*1e6, directory)
+		Teffs[im] =Teff
+		Rs[im]  = R
+	
+	np.save('mTR_2Myr.npy', np.array([mstars, Teffs, Rs]))
+	
+	plt.plot(mstars, Rs)
+	plt.show()
+	
+	plt.plot(mstars, Teffs)
+	plt.show()
+	exit()
 
-	mstars  =[5.0, 2.0, 1.5, 1.2, 1.0, 0.8]
+	age=1.0
+	mstars  = np.linspace(0.6, 4.0, 20)
+	FUV_max  = np.zeros(mstars.shape)
+	FUV_min  = np.zeros(mstars.shape)
 
-
-	for mstar in mstars:
-		wave, flux, radius, atm_mod = get_spectra(mstar, age, 0.0)
+	for im, mstar in enumerate(mstars):
+		wave, flux, radius, atm_mod = get_spectra(mstar, age, 0.0, Mdot_acc=5e-9 * mstar**2)
 		fuv, euv = compute_fuv_euv_luminosities(wave, flux, radius)
-		Mdot = 1e-8 * mstar**2
-		print('Radius:', radius)
-		rM = magnetospheric_radius(mstar*Msol, Mdot*Msol/year, radius, B=1000.0, xi=0.7)
-		Lacc = accretion_luminosity(mstar*Msol, radius, Mdot*Msol/year, rM)
-		print('%.1lf solar mass FUV (erg/s): %.2e'%(mstar, fuv))
-		print('%.1lf solar mass photospheric FUV flux at 10 au (G0): %.2e'%(mstar, fuv/(1.6e-3*4.*np.pi*(1.496e14)**2)))
-		print('%.1lf solar mass accretion luminosity: %.2e'%(mstar, Lacc))
-		print('%.1lf solar mass accretion FUV flux (1 percent Lacc) at 10 au (G0): %.2e'%(mstar, 0.01*Lacc/(1.6e-3*4.*np.pi*(1.496e14)**2)))
+		print('%.1lf solar mass FUV  (erg/s): %.2e'%(mstar, fuv))
+		print('%.1lf solar mass FUV flux at 10 au (G0): %.2e'%(mstar, fuv/(1.6e-3*4.*np.pi*(100.*1.496e14)**2)))
+		FUV_min[im] = fuv/(1.6e-3*4.*np.pi*(1.496e14)**2) 
+	
+	age=2.0
+	for im, mstar in enumerate(mstars):
+		wave, flux, radius, atm_mod = get_spectra(mstar, age, 0.0, Mdot_acc=5e-9 * mstar**2)
+		fuv, euv = compute_fuv_euv_luminosities(wave, flux, radius)
+		print('%.1lf solar mass FUV  (erg/s): %.2e'%(mstar, fuv))
+		print('%.1lf solar mass FUV flux at 10 au (G0): %.2e'%(mstar, fuv/(1.6e-3*4.*np.pi*(100.*1.496e14)**2)))
+		FUV_max[im] = fuv/(1.6e-3*4.*np.pi*(1.496e14)**2) 
+
+	np.save('non_att_FUV_2Myr', np.array([mstars, FUV_max]))
+	np.save('non_att_FUV_1Myr', np.array([mstars,FUV_min] ))
+
+	mstars, FUV_max = np.load('non_att_FUV_2Myr.npy')
+	mstars, FUV_min = np.load('non_att_FUV_1Myr.npy')
+
+	#How much flux is attenuated?
+	f_att = 0.1
+
+	FUV_max *= f_att
+	FUV_min *= f_att
+
+
+	plt.figure(figsize=(5.,4.))
+	plt.yscale('log')
+	plt.axvspan(0.8, 1.2, color='lightgreen', alpha=0.2)
+	plt.axhspan(2e3, 1e6, color='purple', alpha=0.2)
+	plt.axvspan(2.0, 5.0, color='red', alpha=0.2)
+
+
+	# Add a label to the filled region
+	plt.text(1.4,  700.0, 'Our sample', horizontalalignment='center', fontsize=12, color='lightgreen')
+	plt.text(3.0,  700.0, 'Existing sample', horizontalalignment='center', fontsize=12, color='red')
+
+	plt.text(2.0,  1e6, 'External FUV range', horizontalalignment='center', fontsize=12, color='purple')
+
+
+	#plt.plot(mstars, FUV, color='k')
+	plt.fill_between(mstars, FUV_min, FUV_max, interpolate=True, color='none', edgecolor='k', alpha=1.0,  hatch='//')
+
+
+	plt.ylim([500.0, 2e6])
+	plt.xlim([0.6, 3.5])
+	plt.ylabel('Attenuated FUV flux 1-2 Myr at 100 au [$G_0$]')
+	plt.xlabel('Stellar mass [$M_\odot$]')
+	plt.tick_params(which='both', top=True, left=True, bottom=True, right=True)
+	plt.savefig('FUV_mass.pdf', bbox_inches='tight', format='pdf')
+	plt.show()
 	
 	exit()
 
