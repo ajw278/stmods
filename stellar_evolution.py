@@ -71,7 +71,9 @@ def extract_eep_data(filepath):
 def interpolate_stellar_properties(data, target_age):
 	# Ensure the data is sorted by age
 	data = data.sort_values('star_age')
-
+	if target_age>np.amax(data['star_age']):
+		print('Warning: target age > maximum in the grid... using maximum')
+		target_age = float(np.amax(data['star_age']))
 	# Interpolation functions
 	interpolate_Teff = interp1d(data['star_age'], data['Teff'], kind='linear', fill_value="extrapolate")
 	interpolate_log_g = interp1d(data['star_age'], data['log_g'], kind='linear', fill_value="extrapolate")
@@ -129,6 +131,7 @@ def example_plot(directory, target_mass):
 	plt.tight_layout()
 	plt.show()
 
+
 def fetch_stellar_properties(minit, age_years, directory='MIST_v1.2_feh_p0.00_afe_p0.0_vvcrit0.4_EEPS'):
 	closest_filename, closest_mass = find_closest_mass_file(directory, minit)
 	
@@ -138,8 +141,7 @@ def fetch_stellar_properties(minit, age_years, directory='MIST_v1.2_feh_p0.00_af
 
 	Teff, log_g, log_L, R, star_mass = interpolate_stellar_properties(eep_data, age_years)
 
-	print('Mass, age, Teff, logL:', minit, Teff, log_L, R, star_mass)
-	
+	print('Mass, Teff, logL, R, star_mass:', minit, Teff, log_L, R, star_mass)
 
 	return Teff, log_g, log_L, R, star_mass
 
@@ -283,7 +285,7 @@ def plot_all_isochrones(directory, target_ages, mlims=[20.,100.], observational_
 	# Add a colorbar for mass
 	sm = plt.cm.ScalarMappable(cmap=cmap, norm=norm)
 	sm.set_array([])
-	cbar = plt.colorbar(sm)
+	cbar = plt.colorbar(sm, ax=plt.gca())
 	cbar.set_label('Mass (M_sun)')
 	plt.xlim([4.7, 4.3])
 
@@ -397,7 +399,6 @@ def get_spectra(mstar, age, metallicity=0.0, directory='MIST_v1.2_feh_p0.00_afe_
 	
 	atm_mod = 'Castelli & Kurucz 2004'
 	try:
-
 		try:
 			print('Trying phoenix model...')
 			sp = S.Icat('phoenix', Teff, metallicity, log_g)
@@ -472,9 +473,9 @@ def compute_fuv_euv_luminosities(wave, flux, radius):
 	euv_range = (10, 912)
 
 	# Integrate FUV luminosity (erg/s)
-	FUV_luminosity, _ = compute_luminosity(wave, flux, radius, wavelength_start=912, wavelength_end = 2000.0)
+	FUV_luminosity, _ = compute_luminosity(wave, flux, radius, wavelength_start=912.0, wavelength_end = 2000.0)
 	# Integrate EUV luminosity (erg/s)
-	EUV_luminosity, mean_e = compute_luminosity(wave, flux, radius, wavelength_start=912, wavelength_end = 2000.0)
+	EUV_luminosity, mean_e = compute_luminosity(wave, flux, radius, wavelength_start=10.0, wavelength_end = 912.0)
 
 	# EUV photon counts (photons/s)
 	EUV_photon_counts = EUV_luminosity/mean_e
@@ -521,6 +522,31 @@ def compute_spectra_for_table(dataframe, metallicity=0.0, Mdot_acc=0.0, director
 	dataframe.to_csv('mass_age_UV.csv', sep=',', index=False)
 
 	return dataframe
+	
+def compute_mstar_FUV_EUV(mstars, metallicity=0.0, age=1.0, directory='MIST_v1.2_feh_p0.00_afe_p0.0_vvcrit0.4_EEPS'):
+	"""
+	Compute the stellar spectrum, FUV luminosity, and EUV photon counts for each entry in the given DataFrame.
+
+	"""
+	fuv_luminosities = np.zeros(mstars.shape)
+	euv_photon_counts = np.zeros(mstars.shape)
+
+	for im, mstar in enumerate(mstars):
+		# Call the get_spectra function with the appropriate parameters
+		wave, flux, radius, atm_mod = get_spectra(mstar, age, metallicity, directory=directory)
+		
+		# Compute FUV luminosity and EUV photon counts
+		FUV_luminosity, EUV_photon_counts = compute_fuv_euv_luminosities(wave, flux, radius)
+		
+		# Append results to the lists
+		fuv_luminosities[im] = FUV_luminosity
+		euv_photon_counts[im] = EUV_photon_counts
+	
+	np.save('FUV_lum', np.array([ mstars, fuv_luminosities]))
+	np.save('EUV_counts', np.array([ mstars, euv_photon_counts]))
+	
+	return fuv_luminosities, euv_photon_counts
+		
 
 def compute_fluxes_at_coordinate(csv_path, ra_deg, dec_deg, distance_pc):
 	"""
@@ -545,6 +571,7 @@ def compute_fluxes_at_coordinate(csv_path, ra_deg, dec_deg, distance_pc):
 	star_names = []
 	fuv_flux_g0_list = []
 	euv_counts_list = []
+	separations= []
 
 	for index, row in df.iterrows():
 		# Convert RA and Dec from J2000 format to degrees
@@ -563,12 +590,14 @@ def compute_fluxes_at_coordinate(csv_path, ra_deg, dec_deg, distance_pc):
 		star_names.append(row['Object'])
 		fuv_flux_g0_list.append(fuv_flux_g0)
 		euv_counts_list.append(euv_counts)
+		separations.append(separation.to(u.pc).value * 4.84814e-6)
 
 	# Create a DataFrame to store the results
 	results_df = pd.DataFrame({
 		'Star': star_names,
 		'FUV_flux_G0': fuv_flux_g0_list,
-		'EUV_counts_per_cm2_s': euv_counts_list
+		'EUV_counts_per_cm2_s': euv_counts_list,
+		'separations_pc': separations
 	})
 
 	return results_df
@@ -589,6 +618,9 @@ def compute_fluxes_for_all_stars(Ostars_file , discs_file, distance_pc):
 
 	discs_df["FUV_flux_G0"] =  np.nan
 	discs_df[ "EUV_flux_cts"] =np.nan
+	discs_df["dist_1"] = np.nan
+	discs_df["dist_2"] = np.nan
+
 
 	for irow, disc_row in discs_df.iterrows():
 		# Extract RA and Dec in degrees
@@ -597,14 +629,31 @@ def compute_fluxes_for_all_stars(Ostars_file , discs_file, distance_pc):
 		
 		# Compute fluxes for this coordinate
 		results_df = compute_fluxes_at_coordinate(Ostars_file, ra_deg, dec_deg, distance_pc)
+		
 		discs_df['FUV_flux_G0'][irow] = results_df['FUV_flux_G0'].sum()
+		print(np.asarray(results_df['FUV_flux_G0']))
+		imax  = np.argsort(np.asarray(results_df['FUV_flux_G0']))[-1]
+		imax2  = np.argsort(np.asarray(results_df['FUV_flux_G0']))[-2]
 		discs_df['EUV_flux_cts'][irow] = results_df['EUV_counts_per_cm2_s'].sum()
+		print(irow)
+		print('DIST 1', discs_df['dist_1'])
+		print('DIST 1 row', discs_df['dist_1'][irow])
+		print(results_df['separations_pc'].iloc[imax])
+		discs_df['dist_1'][irow] = float(results_df['separations_pc'].iloc[imax])
+		discs_df['dist_2'][irow] = float(results_df['separations_pc'].iloc[imax2])
 
 	return discs_df
 
 
 if __name__=='__main__':
-	# Example usage
+	"""m =  np.logspace(0., 2., 30)
+	f, e = compute_mstar_FUV_EUV(m, metallicity=0.0, age=3.0, directory='MIST_v1.2_feh_p0.00_afe_p0.0_vvcrit0.4_EEPS')
+	plt.plot(m, f)
+	plt.xscale('log')
+	plt.yscale('log')
+	plt.show()
+	exit()"""
+	 
 	directory = 'MIST_v1.2_feh_p0.00_afe_p0.0_vvcrit0.4_EEPS'  
 	obs_file_path = 'Pis24_Ostars.dat'
 	observational_data = load_observational_data(obs_file_path)
