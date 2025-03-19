@@ -675,8 +675,8 @@ def compute_fuv_euv_luminosities(wave, flux, radius):
 	- EUV_photon_counts: EUV photon counts integrated over 10-912 Angstrom.
 	"""
 	# Define wavelength ranges for FUV and EUV (in Angstroms)
-	fuv_range = (950.0, 2070.0)
-	euv_range = (10, 950.0)
+	fuv_range = (912.0, 2000.0)
+	euv_range = (10, 912.0)
 
 	# Integrate FUV luminosity (erg/s)
 	FUV_luminosity, _ = compute_luminosity(wave, flux, radius, wavelength_start=fuv_range[0], wavelength_end = fuv_range[1])
@@ -778,7 +778,7 @@ def compute_fluxes_at_coordinate(csv_path, ra_deg, dec_deg, distance_pc):
 	star_names = []
 	fuv_flux_g0_list = []
 	euv_counts_list = []
-	distance_list = []
+	separations = []
 
 	for index, row in df.iterrows():
 		# Convert RA and Dec from J2000 format to degrees
@@ -802,15 +802,14 @@ def compute_fluxes_at_coordinate(csv_path, ra_deg, dec_deg, distance_pc):
 		star_names.append(row['Object'])
 		fuv_flux_g0_list.append(fuv_flux_g0)
 		euv_counts_list.append(euv_counts)
-		distance_list.append(physical_separation_pc)
-		separations.append(separation.to(u.pc).value * 4.84814e-6)
+		separations.append(physical_separation_pc)
 
 	# Create a DataFrame to store the results
 	results_df = pd.DataFrame({
 		'Star': star_names,
 		'FUV_flux_G0': fuv_flux_g0_list,
 		'EUV_counts_per_cm2_s': euv_counts_list,
-		'distance_pc': distance_list
+		'separation_pc': separations
 	})
 
 	return results_df
@@ -831,8 +830,8 @@ def compute_fluxes_for_all_stars_filetype1(Ostars_file , discs_file, distance_pc
 
 	discs_df["FUV_flux_G0"] =  np.nan
 	discs_df[ "EUV_flux_cts"] =np.nan
-	discs_df["dist_1"] = np.nan
-	discs_df["dist_2"] = np.nan
+	discs_df["dist_top1_pc"] = np.nan
+	discs_df["dist_top2_pc"] = np.nan
 
 
 	for irow, disc_row in discs_df.iterrows():
@@ -848,31 +847,33 @@ def compute_fluxes_for_all_stars_filetype1(Ostars_file , discs_file, distance_pc
 		imax  = np.argsort(np.asarray(results_df['FUV_flux_G0']))[-1]
 		imax2  = np.argsort(np.asarray(results_df['FUV_flux_G0']))[-2]
 		discs_df['EUV_flux_cts'][irow] = results_df['EUV_counts_per_cm2_s'].sum()
-		print(irow)
-		print('DIST 1', discs_df['dist_1'])
-		print('DIST 1 row', discs_df['dist_1'][irow])
-		print(results_df['separations_pc'].iloc[imax])
-		discs_df['dist_1'][irow] = float(results_df['separations_pc'].iloc[imax])
-		discs_df['dist_2'][irow] = float(results_df['separations_pc'].iloc[imax2])
+		discs_df['dist_top1_pc'][irow] = float(results_df['separation_pc'].iloc[imax])
+		discs_df['dist_top2_pc'][irow] = float(results_df['separation_pc'].iloc[imax2])
 
 	return discs_df
 
-def plot_fuv_flux_vs_distance(discs_df):
+
+def plot_fuv_flux_vs_distance(discs_df_all, discs_df_sub1=None, discs_df_sub2=None):
 	# Separate the data into two subsets based on the 'Name_region' column
-	pis24_df = discs_df[discs_df['Name_region'].str.contains('Pis24')]
-	g353_06_df = discs_df[discs_df['Name_region'].str.contains('G353-06')]
-	g353_07_df = discs_df[discs_df['Name_region'].str.contains('G353-07')]
+	if discs_df_sub1 is None:
+		pis24_df = discs_df_all[discs_df_all['Name_region'].str.contains('Pis24')]
+		g353_06_df = discs_df_all[discs_df_all['Name_region'].str.contains('G353-06')]
+		g353_07_df = discs_df_all[discs_df_all['Name_region'].str.contains('G353-07')]
+	else:
+		pis24_df = discs_df_all
+		g353_06_df = discs_df_sub2
+		g353_07_df = discs_df_sub1
 
 	# Define colors and symbols for the different regions
 	region_styles = {
-		'Pis24': {'color': 'blue', 'marker': 'o'},
-		'G353-06': {'color': 'green', 'marker': 's'},
-		'G353-07': {'color': 'red', 'marker': 'D'}
+		'Pis24': {'color': 'green', 'marker': 'o'},
+		'G353.1+0.6': {'color': 'red', 'marker': 's'},
+		'G353.1+0.7': {'color': 'blue', 'marker': 'D'}
 	}
 
 	plt.figure(figsize=(5, 4))
 
-	for df, region_name in zip([pis24_df, g353_06_df, g353_07_df], ['Pis24', 'G353-06', 'G353-07']):
+	for df, region_name in zip([pis24_df, g353_06_df, g353_07_df], ['Pis24', 'G353.1+0.6', 'G353.1+0.7']):
 		color = region_styles[region_name]['color']
 		marker = region_styles[region_name]['marker']
 		
@@ -890,19 +891,21 @@ def plot_fuv_flux_vs_distance(discs_df):
 						color=color, alpha=0.3)
 			
 			# Add labels
-			plt.text(row['dist_top1_pc']+0.02, row['FUV_flux_G0']*1.05, row['Name'].split('E')[-1], fontsize=8)
+			#plt.text(row['dist_top1_pc']+0.02, row['FUV_flux_G0']*1.05, row['Name'].split('E')[-1], fontsize=8)
+			plt.text(row['dist_top1_pc']+0.02, row['FUV_flux_G0']*1.05, row['Object'], fontsize=8)
 
 	dspace = np.logspace(-1.8, 0.5)
-	ONC_flux =  1e38/(4.*np.pi*1.6e-3*(dspace*3.06e18)**2)
+	Lthet1C, LEUV = compute_mstar_FUV_EUV(np.array([37.0]), metallicity=0.0, age=1.0, directory='MIST_v1.2_feh_p0.00_afe_p0.0_vvcrit0.4_EEPS')
+	ONC_flux =  Lthet1C/(4.*np.pi*1.6e-3*(dspace*3.06e18)**2)
 	# Log scale for the FUV flux axis
 	plt.plot(dspace, ONC_flux, color='k', linestyle='dashed', linewidth=1, label='ONC')
-	plt.plot(dspace, 3.*ONC_flux, color='red', linestyle='dashed', linewidth=1, label='ONC x 3')
-	plt.plot(dspace, 10.*ONC_flux, color='green', linestyle='dashed', linewidth=1, label='ONC x 10')
-	plt.plot(dspace, 50.*ONC_flux, color='blue', linestyle='dashed', linewidth=1, label='ONC x 50')
+	#plt.plot(dspace, 3.*ONC_flux, color='red', linestyle='dashed', linewidth=1, label='ONC x 3')
+	plt.plot(dspace, 10.*ONC_flux, color='k', linestyle='dotted', linewidth=1, label='ONC x 10')
+	#plt.plot(dspace, 50.*ONC_flux, color='blue', linestyle='dashed', linewidth=1, label='ONC x 50')
 	plt.yscale('log')
 	plt.xlabel('Distance to source [pc]')
 	plt.ylabel('Total FUV flux: $F_\mathrm{FUV}$ [$G_0$]')
-	plt.xlim([0., 1.25])
+	plt.xlim([0., 3.0])
 	plt.ylim([1e3, 2e6])
 	plt.legend(loc='best', ncol=2, fontsize=8)
 	plt.tick_params(which='both', top=True, left=True, bottom=True, right=True)
@@ -938,8 +941,8 @@ def compute_fluxes_for_all_stars_filetype2(ostars_file, discs_file, distance_pc,
 		sorted_results = results_df.sort_values(by='FUV_flux_G0', ascending=False)
 
 		# Get distances to the top two contributors, if available
-		top1_distance = sorted_results.iloc[0]['distance_pc'] if len(sorted_results) > 0 else np.nan
-		top2_distance = sorted_results.iloc[1]['distance_pc'] if len(sorted_results) > 1 else np.nan
+		top1_distance = sorted_results.iloc[0]['separation_pc'] if len(sorted_results) > 0 else np.nan
+		top2_distance = sorted_results.iloc[1]['separation_pc'] if len(sorted_results) > 1 else np.nan
 
 		# Assign the distances to the discs DataFrame
 		discs_df.at[irow, 'dist_top1_pc'] = top1_distance
@@ -1041,7 +1044,7 @@ if __name__=='__main__':
 	
 	exit()"""
 
-	redo_massage=True
+	redo_massage=False
 	redo_massage_UV=True
 	directory = 'MIST_v1.2_feh_p0.00_afe_p0.0_vvcrit0.4_EEPS'  
 	obs_file_path = 'Pis24_Ostars.dat'
@@ -1066,16 +1069,24 @@ if __name__=='__main__':
 	merged_df.to_csv('Pis24_Ostars_wUV.csv', sep=',', index=False)
 
 
-	distance_pc = 2000.0  # Example distance in parsecs
+	distance_pc = 1690.0  # Kuhn et al. 2019 (not now, updated to XUE value)
 	disc_fluxes = compute_fluxes_for_all_stars_filetype1('Pis24_Ostars_wUV.csv', 'Pis24_discs.dat', distance_pc)
 	#disc_fluxes = compute_fluxes_for_all_stars_filetype2('Pis24_Ostars_wUV.csv', 'M_0.8_1.2_all_regions.csv', distance_pc)
-
-
 	disc_fluxes.to_csv('disc_fluxes_Pis24.csv', sep=',', index=False)
+
+	disc_fluxes_BN = compute_fluxes_for_all_stars_filetype1('Pis24_Ostars_wUV.csv', 'BN_discs.dat', distance_pc)
+	disc_fluxes_BN.to_csv('disc_fluxes_BN.csv', sep=',', index=False)
+
+	disc_fluxes_N78 = compute_fluxes_for_all_stars_filetype1('Pis24_Ostars_wUV.csv', 'N78_discs.dat', distance_pc)
+	disc_fluxes_N78.to_csv('disc_fluxes_N78.csv', sep=',', index=False)
+
+	plot_fuv_flux_vs_distance(disc_fluxes, discs_df_sub1=disc_fluxes_BN, discs_df_sub2=disc_fluxes_N78)
+
+
 
 	# Replace the RA, Dec, and distance with your specific values
 	"""ra_deg = 260.0  # Example RA in degrees
 	dec_deg = -34.0  # Example Dec in degrees
-	distance_pc = 2000.0  # Example distance in parsecs
+	distance_pc = 1770.0  # Example distance in parsecs
 	results = compute_fluxes_at_coordinate('Pis24_Ostars_wUV.csv', ra_deg, dec_deg, distance_pc)
 	print(results)"""
