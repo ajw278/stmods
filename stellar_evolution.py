@@ -8,33 +8,61 @@ import pysynphot as S
 from astropy.coordinates import SkyCoord
 import astropy.units as u
 
-G = 6.67e-8
-Msol  =1.989e33
-au = 1.496e13
-sig_SB = 5.67e-5 #K^-4
-mp = 1.6726e-24
-k_B = 1.81e-16 #cgs K^-1
-Lsol = 3.828e33 #erg/s
-year = 365.*24.*60.0*60.0
-#Rsol in cm
-Rsol = 6.957e10
-h = 6.626e-27  # Planck's constant in erg*s
-c = 2.998e10   # Speed of light in cm/s
-eV = 1.602e-12
 
 
-h = 6.626e-27  # Planck's constant in erg*s
-c = 2.998e10   # Speed of light in cm/s
-k_B = 1.381e-16 # Boltzmann constant in erg/K
+from definitions import *
 
-def find_closest_mass_file(directory, target_mass, tol= 0.5):
-	closest_mass = None
+
+
+
+def find_max_mass_for_age(directory, target_age):
+	"""
+	This function finds the maximum stellar mass for which the MIST stellar model reaches the given age.
+
+	Args:
+		directory (str): The directory where the MIST stellar model files are stored.
+		target_age (float): The age in Myr to check the models against.
+		
+	Returns:
+		max_mass (float): The maximum stellar mass for which the model extends to the target age.
+	"""
+	max_mass = None
 	closest_filename = None
 
+	# Iterate over all files in the directory
 	for filename in os.listdir(directory):
 		if filename.endswith('.track.eep'):
 			try:
+				# Extract mass from the filename (assuming the format '00037M.track.eep')
 				mass_str = filename.split('M')[0]
+				mass = float(mass_str) / 100  # Convert mass string to solar masses
+
+				# Extract the data from the file
+				filepath = os.path.join(directory, filename)
+				data = extract_eep_data(filepath)
+
+				# Check if the stellar track extends to or beyond the target age
+				if data['star_age'].max() >= target_age:
+					if max_mass is None or mass > max_mass:
+						max_mass = mass
+						closest_filename = filename
+
+			except ValueError:
+				continue
+
+	if max_mass is None:
+		raise Warning(f'No stellar model reaches the age of {target_age} Myr.')
+
+	return max_mass, closest_filename
+
+def find_closest_mass_file(directory, target_mass, tol= 0.5, stmodsdir=STMODS_DIR):
+	closest_mass = None
+	closest_filename = None
+
+	for filename in os.listdir(stmodsdir+directory):
+		if filename.endswith('.track.eep'):
+			try:
+				mass_str = filename.split('/')[-1].split('M')[0]
 				mass = float(mass_str) / 100  # Convert to solar masses assuming filename like '00037M.track.eep'
 				if closest_mass is None or abs(mass - target_mass) < abs(closest_mass - target_mass):
 					closest_mass = mass
@@ -91,8 +119,8 @@ def interpolate_stellar_properties(data, target_age):
 
 	return Teff, log_g, log_L, R, star_mass
 
-def example_plot(directory, target_mass):
-	closest_filename, closest_mass = find_closest_mass_file(directory, target_mass)
+def example_plot(directory, target_mass, stmodsdir=STMODS_DIR):
+	closest_filename, closest_mass = find_closest_mass_file(directory, target_mass, stmodsdir=stmodsdir)
 
 	print(f"Closest mass file: {closest_filename} with mass {closest_mass} M_sun")
 
@@ -131,30 +159,70 @@ def example_plot(directory, target_mass):
 	plt.tight_layout()
 	plt.show()
 
+def fetch_stellar_properties(minit, age_years, directory, stmodsdir=STMODS_DIR):
+	if minit>1.4:
+		closest_filename, closest_mass = find_closest_mass_file(directory, minit, stmodsdir=stmodsdir)
+		
+		filepath = os.path.join(stmodsdir+directory, closest_filename)
+		eep_data = extract_eep_data(filepath)
+		print(filepath)
 
-def fetch_stellar_properties(minit, age_years, directory='MIST_v1.2_feh_p0.00_afe_p0.0_vvcrit0.4_EEPS'):
-	closest_filename, closest_mass = find_closest_mass_file(directory, minit)
+		Teff, log_g, log_L, R, star_mass = interpolate_stellar_properties(eep_data, age_years)
+
+		print('Mass, age, Teff, logL:', minit, age_years, Teff, log_L, R, star_mass)
+		
+
+		return Teff, log_g, log_L, R, star_mass
+	else:
 	
-	filepath = os.path.join(directory, closest_filename)
-	eep_data = extract_eep_data(filepath)
-	print(filepath)
+		# Load the provided CSV file and skip initial header rows
+		file_path = stmodsdir+'BHAC15_tracks.csv'
+		df_clean = pd.read_csv(file_path, comment='!', delim_whitespace=True)
 
-	Teff, log_g, log_L, R, star_mass = interpolate_stellar_properties(eep_data, age_years)
+		# Add appropriate column headers based on the description given
+		column_names = [
+		    "M/Ms", "log_t", "Teff", "L/Ls", "g", "R/Rs", "log(Li/Li0)", "log_Tc", "log_ROc",
+		    "Mrad", "Rrad", "k2conv", "k2rad"
+		]
+		df_clean.columns = column_names
 
-	print('Mass, Teff, logL, R, star_mass:', minit, Teff, log_L, R, star_mass)
+		
+		# Convert the mass column to numeric, forcing errors to NaN (which we will drop)
+		df_clean["M/Ms"] = pd.to_numeric(df_clean["M/Ms"], errors='coerce')
 
-	return Teff, log_g, log_L, R, star_mass
+		# Drop rows where the mass column has NaN (i.e., non-numeric values were present)
+		df_clean_numeric = df_clean.dropna(subset=["M/Ms"])
 
-def find_all_mass_files(directory):
+		
+		# Filter the DataFrame for relevant columns and convert mass and age to log space
+		df_clean_numeric['log_M/Ms'] = np.log10(df_clean_numeric['M/Ms'])
+
+		# Prepare data for interpolation: extract mass, age, and the columns we want to interpolate
+		points = np.array([df_clean_numeric['log_M/Ms'], df_clean_numeric['log_t']]).T
+		teff_values = df_clean_numeric['Teff']
+		logg_values = df_clean_numeric['g']
+		logL_values = df_clean_numeric['L/Ls']
+		radius_values = df_clean_numeric['R/Rs']
+
+		log_mass_target = np.log10(minit)
+		log_age_target = np.log10(age_years)
+		# Perform 2D interpolation using griddata in log space
+		interpolated_teff = griddata(points, teff_values, (log_mass_target, log_age_target), method='linear')
+		interpolated_logg = griddata(points, logg_values, (log_mass_target, log_age_target), method='linear')
+		interpolated_logL = griddata(points, logL_values, (log_mass_target, log_age_target), method='linear')
+		interpolated_radius = griddata(points, radius_values, (log_mass_target, log_age_target), method='linear')
+
+		return interpolated_teff, interpolated_logg, interpolated_logL, interpolated_radius
+
+def find_all_mass_files(directory, stmodsdir=STMODS_DIR):
     """
     Find all filenames in the directory that correspond to different initial masses.
     Assumes filenames are in the format 'MIST_mass_X.XX.dat', where X.XX is the mass.
     """
     filenames = []
-    
-    for filename in os.listdir(directory):
+    for filename in os.listdir(stmodsdir+directory):
         if filename.endswith('.track.eep'):  # Assuming .dat files are the ones to be used
-            filenames.append(os.path.join(directory, filename))
+            filenames.append(os.path.join(stmodsdir+directory, filename))
     
     return filenames
 
@@ -168,7 +236,7 @@ def find_closest_age(data, target_age):
 import matplotlib.cm as cm
 import matplotlib.colors as mcolors
 
-def plot_all_isochrones(directory, target_ages, mlims=[20.,100.], observational_data=None):
+def plot_all_isochrones(directory, target_ages, mlims=[20.,100.], observational_data=None, stmodsdir=STMODS_DIR):
 	"""
 	Plot the HR diagram with isochrones for all available stellar mass files in the directory.
 
@@ -176,7 +244,7 @@ def plot_all_isochrones(directory, target_ages, mlims=[20.,100.], observational_
 	- directory: The directory containing the MIST data files.
 	- target_ages: List of ages (in log years) for which to plot the isochrones.
 	"""
-	files = find_all_mass_files(directory)
+	files = find_all_mass_files(directory, stmodsdir=stmodsdir)
 	mass_labels = []
 
 	plt.figure(figsize=(8, 8))
@@ -252,11 +320,7 @@ def plot_all_isochrones(directory, target_ages, mlims=[20.,100.], observational_
 			if len(obj.split('_'))>1:
 				obj = row['Object'].split('_')[1]
 			# Create a LaTeX formatted label with superscript and subscript for best-fit values
-			label_text = (
-				f"  {obj}: "
-				f"${best_fit[0]:.0f}_{{{lower_mass:.0f}}}^{{{upper_mass:.0f}}}$ $M_{{\odot}}$, "
-				f"${best_fit[1]/1e6:.1f}_{{{lower_age/1e6:.1f}}}^{{{upper_age/1e6:.1f}}}$ Myr"
-			)
+			label_text = ("  %s: $%.0f_{%.0f}^{%.0f}$ $M_{\\odot}$, $%.1f_{%.1f}^{%.1f}$ Myr"%(obj, best_fit[0], lower_mass, upper_mass, best_fit[1]/1e6, lower_age/1e6, upper_age/1e6))
 
 			# Label the observational point with the best-fit mass and age in LaTeX format
 			plt.text(
@@ -273,6 +337,9 @@ def plot_all_isochrones(directory, target_ages, mlims=[20.,100.], observational_
 
 			best_fit_dict['age_lower'].append(lower_age/1e6)
 			best_fit_dict['age_upper'].append(upper_age/1e6)
+
+			print('Best fit list:', best_fit)
+			print(best_fit_dict)
 
 			df=pd.DataFrame.from_dict(best_fit_dict,orient='index').transpose()
 			df.to_csv('mass_age.csv', sep=',', index=False)
@@ -295,10 +362,10 @@ def plot_all_isochrones(directory, target_ages, mlims=[20.,100.], observational_
 	#plt.legend()
 	plt.show()
 
-	return best_fit_dict
+	return df
 
 
-def find_best_fit_mass_age(directory, logL, logL_err, T_eff, T_eff_err, age_limits=None, mass_limits=None):
+def find_best_fit_mass_age(directory, logL, logL_err, T_eff, T_eff_err, age_limits=None,  stmodsdir=STMODS_DIR,mass_limits=None):
 	"""
 	Find all stellar masses and ages consistent within 1-sigma of given luminosity and effective temperature.
 
@@ -312,7 +379,7 @@ def find_best_fit_mass_age(directory, logL, logL_err, T_eff, T_eff_err, age_limi
 	Returns:
 	- results: A list of tuples, where each tuple is (mass, age) consistent with the provided measurements.
 	"""
-	files = find_all_mass_files(directory)
+	files = find_all_mass_files(directory, stmodsdir=stmodsdir)
 
 	consistent_masses_ages = []
 	best_fit = None
@@ -389,21 +456,136 @@ def load_observational_data(file_path):
     
     return extracted_data
 
-def get_spectra(mstar, age, metallicity=0.0, directory='MIST_v1.2_feh_p0.00_afe_p0.0_vvcrit0.4_EEPS'):
+# Planck function for blackbody radiation
+def planck_wavelength(wavelength_angstrom, T):
+	wavelength_cm = np.asarray(wavelength_angstrom) * 1e-8  # Convert Angstrom to cm
+	x = h * c / (wavelength_cm * k_B * T)  # Dimensionless argument h nu / k T
+
+	# Use NumPy's where to apply Rayleigh-Jeans for small x, full Planck otherwise
+	B_lambda = (2.0 * k_B * T) / (wavelength_cm**4) * (c**2)
+	B_lambda[x>1e-10] = (2.0 * h * c**2) / (wavelength_cm[x>1e-10]**5) * (1.0 / (np.exp(x[x>1e-10]) - 1.0)) 
 	
+	return B_lambda/1e8   # Convert from per cm to per Angstrom
+
+# Disk temperature profile (simplified thin disk model)
+def disk_temperature(r, M_star, R_star, accretion_rate):
+	return (3 * G * M_star * accretion_rate / (8 * np.pi * sig_SB * r**3) * (1 - (R_star / r)**0.5))**0.25
+
+# Flux from an accretion disk at a given wavelength
+def accretion_disk_flux(wavelength_angstrom, M_star, accretion_rate, R_star, R_outstar=10.0):
+	M_star_cgs = M_star * Msol  # Convert stellar mass to grams
+	R_star_cgs = R_star * Rsol  # Convert stellar radius to cm
+	accretion_rate_cgs = accretion_rate * Msol / year # Convert solar masses/year to g/s
+
+	# Create an array of radii from the stellar surface to the outer disk
+	r = np.logspace(np.log10(R_star_cgs), np.log10(R_outstar * R_star_cgs), 1000)
+	dr = np.diff(r)
+	# Initialize the flux
+	total_flux = 0
+
+	# Loop over the radii and calculate the contribution from each disk annulus
+	for ir, radius in enumerate(r[1:]):
+		T = disk_temperature(radius, M_star_cgs, R_star_cgs, accretion_rate_cgs)  # Temperature at radius
+		B_lambda =  planck_wavelength(wavelength_angstrom, T)  # Planck function at wavelength and temperature
+		
+		dA = 2 * np.pi * radius * dr[ir] # Area of the annulus
+		total_flux += B_lambda * dA  # Sum the flux contributions
+
+	
+	# Convert from specific intensity to flux by multiplying by 2 pi (integration over solid angle)
+	return total_flux  # In units of erg s^-1 A^-1
+
+# Free-fall velocity
+def free_fall_velocity(M_star, R_star, r_M):
+	return np.sqrt(2 * G * M_star * (1/R_star - 1/r_M))
+
+# Shock temperature
+def shock_temperature(v_ff):
+	return (3./16.0) * (mu * mH * v_ff**2) / k_B
+
+
+def column_energy_flux(f, R_star, M_star, Mdot_acc, r_M):
+	vff = free_fall_velocity(M_star, R_star, r_M)
+	F = 0.5*Mdot_acc*vff**2
+	F /= f*4.*np.pi*R_star*R_star
+	return F
+
+def coll_temp_approx(Tstar, F):
+	Tcol = ((sig_SB*Tstar**4 + F)/sig_SB)**(1./4.)
+	return Tcol
+
+# Accretion shock luminosity
+def accretion_luminosity(M_star, R_star, M_dot, r_M):
+	return (G * M_star * M_dot) / R_star * (1 - R_star / r_M)
+
+# Blackbody emission from the shock region
+def shock_flux(wavelength_angstrom, T, area):
+	B_lambda = planck_wavelength(wavelength_angstrom, T)
+	return B_lambda * area
+
+def magnetospheric_radius(M_star, M_dot, R_star, B=1000.0, xi=0.7):
+	mdm = B*R_star**3
+	return xi*((mdm**4.)/(4.*G*M_star*M_dot**2))**(1./7.)
+
+# Total accretion shock spectrum approximated as by Mendigutia et al. 2011 (actually reference within MDCH04..)
+def accretion_shock_spectrum_approx(M_star_sol, R_star_sol, M_dot_Msolyr, Tstar, wavelength_A, f=0.01):
+
+	M_star = M_star_sol*Msol
+	R_star = R_star_sol*Rsol
+	M_dot = M_dot_Msolyr*Msol/year
+
+	r_M = magnetospheric_radius(M_star, M_dot, R_star, B=1000.0, xi=0.7)
+
+	print('r_m/r_star', r_M/R_star)
+
+	# Free-fall velocity
+	v_ff = free_fall_velocity(M_star, R_star, r_M)
+
+	print('v_ff (km/s)', v_ff/1e5)
+
+	# Shock temperature
+	#T_shock = shock_temperature(v_ff)
+	F = column_energy_flux(f, R_star,  M_star, M_dot, r_M)
+
+	T_coll = coll_temp_approx(Tstar, F)
+
+	# Luminosity from the shock
+	L_acc = accretion_luminosity(M_star, R_star, M_dot, r_M)
+
+	# Filling factor (fraction of the surface covered by accretion)
+	A_coll = f * 4 * np.pi * R_star**2
+
+	# Spectrum from the shock as a function of wavelength
+	spectrum = shock_flux(wavelength_A, T_coll, A_coll)
+
+	print('Normalisation:', L_acc / np.trapz(spectrum, wavelength_A))
+	spectrum *= L_acc / np.trapz(spectrum, wavelength_A)
+
+	return spectrum
+
+
+def get_spectra(mstar, age, metallicity=0.0, Mdot_acc=0.0, directory='MIST_v1.2_feh_p0.00_afe_p0.0_vvcrit0.4_EEPS', stmodsdir=STMODS_DIR,return_wavunits=False):
+	
+	cwd = os.getcwd()
+
+	os.chdir(stmodsdir)
+	print('Input to stellar model spectrum retrieval', mstar, age, metallicity, directory, stmodsdir)
 	# Get stellar properties
-	Teff, log_g, log_L, R, star_mass = fetch_stellar_properties(mstar, age*1e6, directory=directory)
+	Teff, log_g, log_L, R, star_mass = fetch_stellar_properties(mstar, age*1e6, directory, stmodsdir=stmodsdir)
+	print('Stmod output:', Teff, log_g, log_L, R, star_mass)
 	
 	# Compute the stellar spectrum using Castelli & Kurucz atmosphere models
-	print(Teff, log_g, log_L, R, star_mass)
+	sp = S.Icat('phoenix', Teff, metallicity, log_g)
+	atm_mod = 'Phoenix'
 	
-	atm_mod = 'Castelli & Kurucz 2004'
 	try:
 		try:
 			print('Trying phoenix model...')
 			sp = S.Icat('phoenix', Teff, metallicity, log_g)
 			atm_mod = 'Phoenix'
 		except:
+			print('Trying CK04 model...')
+			atm_mod = 'Castelli & Kurucz 2004'
 			sp = S.Icat('ck04models', Teff, metallicity, log_g)
 	except:
 		try:
@@ -416,7 +598,6 @@ def get_spectra(mstar, age, metallicity=0.0, directory='MIST_v1.2_feh_p0.00_afe_
 			atm_mod = 'Blackbody'
 
 
-		
 	#sp = S.Icat('k93models', Teff, metallicity, log_g)
 	
 	#Renormalize given the stellar luminosity 
@@ -424,15 +605,36 @@ def get_spectra(mstar, age, metallicity=0.0, directory='MIST_v1.2_feh_p0.00_afe_
 	
 	Lnorm = Lsol*10.**log_L / Ltot
 
+	flux = sp.flux
+	facc = 0.0
+	if Mdot_acc>0.0:
+		facc = accretion_shock_spectrum_approx(star_mass, R, Mdot_acc, Teff, sp.wave, f=0.01)/(4.*np.pi*R*R*Rsol*Rsol)
+		"""plt.plot(sp.wave, facc)
+		plt.plot(sp.wave, sp.flux*Lnorm)
 
-	return sp.wave, sp.flux*Lnorm, R*Rsol, atm_mod
+		plt.plot(sp.wave, sp.flux*Lnorm+facc, color='k')
+		plt.xscale('log')
+		plt.yscale('log')
+		plt.ylim([1e2, 1e7])
+		plt.show()"""
+		
+	
+	#print('Wavelength units:', sp.waveunits.name)
+	#print('Integrated flux:',Lnorm*Ltot)
+
+	os.chdir(cwd)
+
+	if return_wavunits:
+		return sp.wave, flux*Lnorm+facc, R*Rsol, atm_mod, sp.waveunits.name 
+	else:
+		return sp.wave, flux*Lnorm+facc, R*Rsol, atm_mod
 
 def compute_luminosity(wave, flux, Rstar, wavelength_start=0.0, wavelength_end = np.inf):
 	"""
 	Compute the luminosity of the star between given wavelengths.
 
 	Parameters:
-	wave (array): Wavelength array in Angstroms.
+	wave (array): Wavelength array in Anroms.
 	flux (array): Flux array in erg/cm^2/s/Å.
 	wavelength_start (float): Starting wavelength in Angstroms.
 	wavelength_end (float): Ending wavelength in Angstroms.
@@ -445,6 +647,10 @@ def compute_luminosity(wave, flux, Rstar, wavelength_start=0.0, wavelength_end =
 
 	# Integrate the flux over the selected wavelength range
 	integrated_flux = np.trapz(flux[mask]*4.*np.pi*Rstar*Rstar, wave[mask])
+
+
+	# Integrate the flux over the selected wavelength range
+	integrated_flux_all = np.trapz(flux*4.*np.pi*Rstar*Rstar, wave)
 
 	mean_energy = np.trapz(flux[mask]*4.*np.pi*Rstar*Rstar*(12398.0/wave[mask]), wave[mask])/integrated_flux
 	
@@ -469,20 +675,20 @@ def compute_fuv_euv_luminosities(wave, flux, radius):
 	- EUV_photon_counts: EUV photon counts integrated over 10-912 Angstrom.
 	"""
 	# Define wavelength ranges for FUV and EUV (in Angstroms)
-	fuv_range = (912, 2400)
-	euv_range = (10, 912)
+	fuv_range = (950.0, 2070.0)
+	euv_range = (10, 950.0)
 
 	# Integrate FUV luminosity (erg/s)
-	FUV_luminosity, _ = compute_luminosity(wave, flux, radius, wavelength_start=912.0, wavelength_end = 2000.0)
+	FUV_luminosity, _ = compute_luminosity(wave, flux, radius, wavelength_start=fuv_range[0], wavelength_end = fuv_range[1])
 	# Integrate EUV luminosity (erg/s)
-	EUV_luminosity, mean_e = compute_luminosity(wave, flux, radius, wavelength_start=10.0, wavelength_end = 912.0)
+	EUV_luminosity, mean_e = compute_luminosity(wave, flux, radius, wavelength_start=euv_range[0], wavelength_end = euv_range[1])
 
 	# EUV photon counts (photons/s)
 	EUV_photon_counts = EUV_luminosity/mean_e
 
 	return FUV_luminosity, EUV_photon_counts
 
-def compute_spectra_for_table(dataframe, metallicity=0.0, Mdot_acc=0.0, directory='MIST_v1.2_feh_p0.00_afe_p0.0_vvcrit0.4_EEPS'):
+def compute_spectra_for_table(dataframe, metallicity=0.0, Mdot_acc=0.0, directory='MIST_v1.2_feh_p0.00_afe_p0.0_vvcrit0.4_EEPS', stmodsdir=STMODS_DIR):
 	"""
 	Compute the stellar spectrum, FUV luminosity, and EUV photon counts for each entry in the given DataFrame.
 
@@ -503,7 +709,7 @@ def compute_spectra_for_table(dataframe, metallicity=0.0, Mdot_acc=0.0, director
 		age = row['age']
 
 		# Call the get_spectra function with the appropriate parameters
-		wave, flux, radius, atm_mod = get_spectra(mstar, age, metallicity, directory=directory)
+		wave, flux, radius, atm_mod = get_spectra(mstar, age, metallicity, Mdot_acc=Mdot_acc, directory=directory,stmodsdir=stmodsdir)
 		
 		# Compute FUV luminosity and EUV photon counts
 		FUV_luminosity, EUV_photon_counts = compute_fuv_euv_luminosities(wave, flux, radius)
@@ -512,6 +718,7 @@ def compute_spectra_for_table(dataframe, metallicity=0.0, Mdot_acc=0.0, director
 		fuv_luminosities.append(FUV_luminosity)
 		euv_photon_counts.append(EUV_photon_counts)
 		atm_models.append(atm_mod)
+
 
 	# Add FUV and EUV columns to the DataFrame
 	dataframe['FUV_luminosity'] = fuv_luminosities
@@ -571,14 +778,19 @@ def compute_fluxes_at_coordinate(csv_path, ra_deg, dec_deg, distance_pc):
 	star_names = []
 	fuv_flux_g0_list = []
 	euv_counts_list = []
-	separations= []
+	distance_list = []
 
 	for index, row in df.iterrows():
 		# Convert RA and Dec from J2000 format to degrees
 		star_coord = SkyCoord(row['ra'], row['dec'], unit=(u.hourangle, u.deg))
-		print(star_coord, target_coord)
-		separation = star_coord.separation(target_coord).arcsec * (distance_pc * u.pc).to(u.cm)
-		physical_separation_cm = separation.value * 4.84814e-6
+		# Calculate angular separation
+		separation = star_coord.separation(target_coord).arcsec  # in arcseconds
+
+		# Convert angular separation to physical separation (in parsecs)
+		# 1 arcsec ≈ 4.84814e-6 radians
+		separation_rad = separation * u.arcsec.to(u.rad)
+		physical_separation_pc = separation_rad * distance_pc
+		physical_separation_cm = physical_separation_pc*u.pc.to(u.cm)
 		
 		# Compute FUV flux in G0 units
 		fuv_flux_g0 = row['FUV_luminosity'] / (4 * np.pi * physical_separation_cm**2) / 1.6e-3
@@ -590,6 +802,7 @@ def compute_fluxes_at_coordinate(csv_path, ra_deg, dec_deg, distance_pc):
 		star_names.append(row['Object'])
 		fuv_flux_g0_list.append(fuv_flux_g0)
 		euv_counts_list.append(euv_counts)
+		distance_list.append(physical_separation_pc)
 		separations.append(separation.to(u.pc).value * 4.84814e-6)
 
 	# Create a DataFrame to store the results
@@ -597,14 +810,14 @@ def compute_fluxes_at_coordinate(csv_path, ra_deg, dec_deg, distance_pc):
 		'Star': star_names,
 		'FUV_flux_G0': fuv_flux_g0_list,
 		'EUV_counts_per_cm2_s': euv_counts_list,
-		'separations_pc': separations
+		'distance_pc': distance_list
 	})
 
 	return results_df
 
 
 # Calculate FUV flux and EUV counts for each coordinate
-def compute_fluxes_for_all_stars(Ostars_file , discs_file, distance_pc):
+def compute_fluxes_for_all_stars_filetype1(Ostars_file , discs_file, distance_pc):
 
 	# Load the Pis24_discs.dat file
 	discs_df = pd.read_csv(discs_file, delim_whitespace=True)
@@ -644,6 +857,97 @@ def compute_fluxes_for_all_stars(Ostars_file , discs_file, distance_pc):
 
 	return discs_df
 
+def plot_fuv_flux_vs_distance(discs_df):
+	# Separate the data into two subsets based on the 'Name_region' column
+	pis24_df = discs_df[discs_df['Name_region'].str.contains('Pis24')]
+	g353_06_df = discs_df[discs_df['Name_region'].str.contains('G353-06')]
+	g353_07_df = discs_df[discs_df['Name_region'].str.contains('G353-07')]
+
+	# Define colors and symbols for the different regions
+	region_styles = {
+		'Pis24': {'color': 'blue', 'marker': 'o'},
+		'G353-06': {'color': 'green', 'marker': 's'},
+		'G353-07': {'color': 'red', 'marker': 'D'}
+	}
+
+	plt.figure(figsize=(5, 4))
+
+	for df, region_name in zip([pis24_df, g353_06_df, g353_07_df], ['Pis24', 'G353-06', 'G353-07']):
+		color = region_styles[region_name]['color']
+		marker = region_styles[region_name]['marker']
+		
+		plt.scatter([],[], color=color, marker=marker, edgecolor='none', label=region_name)
+		for i, row in df.iterrows():
+			# Plot the distance to the closest contributor with solid marker
+			plt.scatter(row['dist_top1_pc'], row['FUV_flux_G0'], color=color, marker=marker, edgecolor='none')
+			
+			# Plot the distance to the second closest contributor with hollow marker
+			plt.scatter(row['dist_top2_pc'], row['FUV_flux_G0'], facecolors='none', edgecolor=color, marker=marker)
+			
+			# Connect the two points with a faint line
+			plt.plot([row['dist_top1_pc'], row['dist_top2_pc']], 
+						[row['FUV_flux_G0'], row['FUV_flux_G0']], 
+						color=color, alpha=0.3)
+			
+			# Add labels
+			plt.text(row['dist_top1_pc']+0.02, row['FUV_flux_G0']*1.05, row['Name'].split('E')[-1], fontsize=8)
+
+	dspace = np.logspace(-1.8, 0.5)
+	ONC_flux =  1e38/(4.*np.pi*1.6e-3*(dspace*3.06e18)**2)
+	# Log scale for the FUV flux axis
+	plt.plot(dspace, ONC_flux, color='k', linestyle='dashed', linewidth=1, label='ONC')
+	plt.plot(dspace, 3.*ONC_flux, color='red', linestyle='dashed', linewidth=1, label='ONC x 3')
+	plt.plot(dspace, 10.*ONC_flux, color='green', linestyle='dashed', linewidth=1, label='ONC x 10')
+	plt.plot(dspace, 50.*ONC_flux, color='blue', linestyle='dashed', linewidth=1, label='ONC x 50')
+	plt.yscale('log')
+	plt.xlabel('Distance to source [pc]')
+	plt.ylabel('Total FUV flux: $F_\mathrm{FUV}$ [$G_0$]')
+	plt.xlim([0., 1.25])
+	plt.ylim([1e3, 2e6])
+	plt.legend(loc='best', ncol=2, fontsize=8)
+	plt.tick_params(which='both', top=True, left=True, bottom=True, right=True)
+
+	# Avoid overlapping labels
+	plt.tight_layout()
+	plt.savefig('solar_mass_flux.pdf', bbox_inches='tight', format='pdf')
+
+	# Show the plot
+	plt.show()
+
+
+# Calculate FUV flux and EUV counts for each coordinate
+def compute_fluxes_for_all_stars_filetype2(ostars_file, discs_file, distance_pc, plot=True):
+
+	discs_df = pd.read_csv(discs_file)
+
+	# Ensure RA and Dec columns are in degrees and named appropriately
+	discs_df['FUV_flux_G0'] = np.nan
+	discs_df['EUV_flux_cts'] = np.nan
+
+	for irow, disc_row in discs_df.iterrows():
+		# Extract RA and Dec in degrees
+		ra_deg = disc_row['RA_J2000']
+		dec_deg = disc_row['Dec_J2000']
+		
+		# Compute fluxes for this coordinate
+		results_df = compute_fluxes_at_coordinate(ostars_file, ra_deg, dec_deg, distance_pc)
+		discs_df.at[irow, 'FUV_flux_G0'] = results_df['FUV_flux_G0'].sum()
+		discs_df.at[irow, 'EUV_flux_cts'] = results_df['EUV_counts_per_cm2_s'].sum()
+
+		# Sort the results by FUV_flux_G0 in descending order to find top contributors
+		sorted_results = results_df.sort_values(by='FUV_flux_G0', ascending=False)
+
+		# Get distances to the top two contributors, if available
+		top1_distance = sorted_results.iloc[0]['distance_pc'] if len(sorted_results) > 0 else np.nan
+		top2_distance = sorted_results.iloc[1]['distance_pc'] if len(sorted_results) > 1 else np.nan
+
+		# Assign the distances to the discs DataFrame
+		discs_df.at[irow, 'dist_top1_pc'] = top1_distance
+		discs_df.at[irow, 'dist_top2_pc'] = top2_distance
+	
+	plot_fuv_flux_vs_distance(discs_df)
+
+	return discs_df
 
 if __name__=='__main__':
 	"""m =  np.logspace(0., 2., 30)
@@ -654,15 +958,100 @@ if __name__=='__main__':
 	plt.show()
 	exit()"""
 	 
+	"""
+	
+	age = 2.0
+	
+	directory =   'MIST_v1.2_feh_p0.00_afe_p0.0_vvcrit0.4_EEPS'
+	mstars  = np.linspace(0.1, 3.0, 50)
+	Teffs = np.zeros(mstars.shape)
+	Rs = np.zeros(mstars.shape)
+	for im, mstar in enumerate(mstars):
+		Teff, log_g, log_L, R, star_mass = fetch_stellar_properties(mstar, age*1e6, directory)
+		Teffs[im] =Teff
+		Rs[im]  = R
+	
+	np.save('mTR_2Myr.npy', np.array([mstars, Teffs, Rs]))
+	
+	plt.plot(mstars, Rs)
+	plt.show()
+	
+	plt.plot(mstars, Teffs)
+	plt.show()
+	exit()"""
+
+	"""age=1.0
+	mstars  = np.linspace(0.6, 4.0, 20)
+	FUV_max  = np.zeros(mstars.shape)
+	FUV_min  = np.zeros(mstars.shape)
+
+	for im, mstar in enumerate(mstars):
+		wave, flux, radius, atm_mod = get_spectra(mstar, age, 0.0, Mdot_acc=5e-9 * mstar**2)
+		fuv, euv = compute_fuv_euv_luminosities(wave, flux, radius)
+		print('%.1lf solar mass FUV  (erg/s): %.2e'%(mstar, fuv))
+		print('%.1lf solar mass FUV flux at 10 au (G0): %.2e'%(mstar, fuv/(1.6e-3*4.*np.pi*(100.*1.496e14)**2)))
+		FUV_min[im] = fuv/(1.6e-3*4.*np.pi*(1.496e14)**2) 
+	
+	age=2.0
+	for im, mstar in enumerate(mstars):
+		wave, flux, radius, atm_mod = get_spectra(mstar, age, 0.0, Mdot_acc=5e-9 * mstar**2)
+		fuv, euv = compute_fuv_euv_luminosities(wave, flux, radius)
+		print('%.1lf solar mass FUV  (erg/s): %.2e'%(mstar, fuv))
+		print('%.1lf solar mass FUV flux at 10 au (G0): %.2e'%(mstar, fuv/(1.6e-3*4.*np.pi*(100.*1.496e14)**2)))
+		FUV_max[im] = fuv/(1.6e-3*4.*np.pi*(1.496e14)**2) 
+
+	np.save('non_att_FUV_2Myr', np.array([mstars, FUV_max]))
+	np.save('non_att_FUV_1Myr', np.array([mstars,FUV_min] ))
+
+	mstars, FUV_max = np.load('non_att_FUV_2Myr.npy')
+	mstars, FUV_min = np.load('non_att_FUV_1Myr.npy')
+
+	#How much flux is attenuated?
+	f_att = 0.1
+
+	FUV_max *= f_att
+	FUV_min *= f_att
+
+
+	plt.figure(figsize=(5.,4.))
+	plt.yscale('log')
+	plt.axvspan(0.8, 1.2, color='lightgreen', alpha=0.2)
+	plt.axhspan(2e3, 1e6, color='purple', alpha=0.2)
+	plt.axvspan(2.0, 5.0, color='red', alpha=0.2)
+
+
+	# Add a label to the filled region
+	plt.text(1.4,  700.0, 'Our sample', horizontalalignment='center', fontsize=12, color='lightgreen')
+	plt.text(3.0,  700.0, 'Existing sample', horizontalalignment='center', fontsize=12, color='red')
+
+	plt.text(2.0,  1e6, 'External FUV range', horizontalalignment='center', fontsize=12, color='purple')
+
+
+	#plt.plot(mstars, FUV, color='k')
+	plt.fill_between(mstars, FUV_min, FUV_max, interpolate=True, color='none', edgecolor='k', alpha=1.0,  hatch='//')
+
+
+	plt.ylim([500.0, 2e6])
+	plt.xlim([0.6, 3.5])
+	plt.ylabel('Attenuated FUV flux 1-2 Myr at 100 au [$G_0$]')
+	plt.xlabel('Stellar mass [$M_\odot$]')
+	plt.tick_params(which='both', top=True, left=True, bottom=True, right=True)
+	plt.savefig('FUV_mass.pdf', bbox_inches='tight', format='pdf')
+	plt.show()
+	
+	exit()"""
+
+	redo_massage=True
+	redo_massage_UV=True
 	directory = 'MIST_v1.2_feh_p0.00_afe_p0.0_vvcrit0.4_EEPS'  
 	obs_file_path = 'Pis24_Ostars.dat'
 	observational_data = load_observational_data(obs_file_path)
-	if not os.path.isfile('mass_age.csv'):
+	if not os.path.isfile('mass_age.csv') or redo_massage:
 		ma_df = plot_all_isochrones(directory, [0.3, 0.5, 1.0, 2.0, 3.0, 5.0, 10.0, 20.0], mlims=[10., 90.], observational_data=observational_data)
 	else:
 		ma_df = pd.read_csv('mass_age.csv', delimiter=',', header=0)
 	
-	if not os.path.isfile('mass_age_UV.csv'):
+	if not os.path.isfile('mass_age_UV.csv') or redo_massage_UV:
 		maL_df = compute_spectra_for_table(ma_df, directory=directory)
 	else:
 		maL_df = pd.read_csv('mass_age_UV.csv', delimiter=',', header=0)
@@ -677,11 +1066,12 @@ if __name__=='__main__':
 	merged_df.to_csv('Pis24_Ostars_wUV.csv', sep=',', index=False)
 
 
-	distance_pc = 2000  # Example distance in parsecs
-	disc_fluxes = compute_fluxes_for_all_stars('Pis24_Ostars_wUV.csv', 'Pis24_discs.dat', distance_pc)
+	distance_pc = 2000.0  # Example distance in parsecs
+	disc_fluxes = compute_fluxes_for_all_stars_filetype1('Pis24_Ostars_wUV.csv', 'Pis24_discs.dat', distance_pc)
+	#disc_fluxes = compute_fluxes_for_all_stars_filetype2('Pis24_Ostars_wUV.csv', 'M_0.8_1.2_all_regions.csv', distance_pc)
 
 
-	disc_fluxes.to_csv('disc_fluxes.csv', sep=',', index=False)
+	disc_fluxes.to_csv('disc_fluxes_Pis24.csv', sep=',', index=False)
 
 	# Replace the RA, Dec, and distance with your specific values
 	"""ra_deg = 260.0  # Example RA in degrees
