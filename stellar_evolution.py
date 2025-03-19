@@ -578,7 +578,7 @@ def get_spectra(mstar, age, metallicity=0.0, Mdot_acc=0.0, directory='MIST_v1.2_
 	sp = S.Icat('phoenix', Teff, metallicity, log_g)
 	atm_mod = 'Phoenix'
 	
-	try:
+	"""try:
 		try:
 			print('Trying phoenix model...')
 			sp = S.Icat('phoenix', Teff, metallicity, log_g)
@@ -595,7 +595,7 @@ def get_spectra(mstar, age, metallicity=0.0, Mdot_acc=0.0, directory='MIST_v1.2_
 		except:
 			print('Warning: using blackbody spectrum because stellar parameters outside of atmosphere model range')
 			sp = S.BlackBody(Teff)
-			atm_mod = 'Blackbody'
+			atm_mod = 'Blackbody'"""
 
 
 	#sp = S.Icat('k93models', Teff, metallicity, log_g)
