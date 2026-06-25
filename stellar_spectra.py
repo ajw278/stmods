@@ -54,8 +54,8 @@ def get_spectra(mstar, age, metallicity=0.0, Mdot_acc=0.0):
 	"""if mstar>0.9:
 		
 		sp_alt = S.BlackBody(Teff)
-		Ltot = np.trapz(sp.flux*np.pi*4.0*R*R*Rsol*Rsol, sp.wave)
-		LBB = np.trapz(sp_alt.flux*np.pi*4.0*R*R*Rsol*Rsol, sp_alt.wave)
+		Ltot = np.trapezoid(sp.flux*np.pi*4.0*R*R*Rsol*Rsol, sp.wave)
+		LBB = np.trapezoid(sp_alt.flux*np.pi*4.0*R*R*Rsol*Rsol, sp_alt.wave)
 		
 		Lnorm = Lsol*10.**log_L / Ltot
 		LnormBB = Lsol*10.**log_L / LBB
@@ -68,7 +68,7 @@ def get_spectra(mstar, age, metallicity=0.0, Mdot_acc=0.0):
 	#sp = S.Icat('k93models', Teff, metallicity, log_g)
 	
 	#Renormalize given the stellar luminosity 
-	Ltot = np.trapz(sp.flux*np.pi*4.0*R*R*Rsol*Rsol, sp.wave)
+	Ltot = np.trapezoid(sp.flux*np.pi*4.0*R*R*Rsol*Rsol, sp.wave)
 	
 	Lnorm = Lsol*10.**log_L / Ltot
 	
@@ -87,7 +87,7 @@ def get_spectra(mstar, age, metallicity=0.0, Mdot_acc=0.0):
 		wave_acc = sp.wave
 		flux_acc = planck.bbfunc(wave_acc, Teff_acc) #  blackbody_spectrum(wave_acc*1e-8, Teff_acc)
 		
-		Ltot_acc = np.trapz(flux_acc*np.pi*4.0*R*R*Rsol*Rsol, wave_acc)
+		Ltot_acc = np.trapezoid(flux_acc*np.pi*4.0*R*R*Rsol*Rsol, wave_acc)
 		
 		
 		flux_acc *= Lacc/Ltot_acc
@@ -121,9 +121,9 @@ def compute_luminosity(wave, flux, Rstar, wavelength_start=0.0, wavelength_end =
 	mask = (wave >= wavelength_start) & (wave <= wavelength_end)
 
 	# Integrate the flux over the selected wavelength range
-	integrated_flux = np.trapz(flux[mask]*4.*np.pi*Rstar*Rstar, wave[mask])
+	integrated_flux = np.trapezoid(flux[mask]*4.*np.pi*Rstar*Rstar, wave[mask])
 
-	mean_energy = np.trapz(flux[mask]*4.*np.pi*Rstar*Rstar*(12398.0/wave[mask]), wave[mask])/integrated_flux
+	mean_energy = np.trapezoid(flux[mask]*4.*np.pi*Rstar*Rstar*(12398.0/wave[mask]), wave[mask])/integrated_flux
 	
 	# Convert to luminosity (erg/s)
 	# Note: The factor of 4πR^2 is already included in the flux normalization, 

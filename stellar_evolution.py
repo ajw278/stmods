@@ -1,16 +1,17 @@
 import os
 import pandas as pd
 import numpy as np
-from scipy.interpolate import interp1d
+from scipy.interpolate import interp1d, griddata
 import matplotlib.pyplot as plt
-import pysynphot as S
 
 from astropy.coordinates import SkyCoord
 import astropy.units as u
 
-
-
 from definitions import *
+
+# Atmosphere models are fetched from the STScI TRDS server when not available locally.
+# Set PYSYN_CDBS to a local path to use downloaded data instead.
+os.environ.setdefault('PYSYN_CDBS', 'https://ssb.stsci.edu/trds')
 
 
 
@@ -87,7 +88,7 @@ def extract_eep_data(filepath):
 	]
 
 	# Read the data
-	data = pd.read_csv(filepath, delim_whitespace=True, comment='#', names=columns, usecols=[0, 1, 6, 11, 13, 14])
+	data = pd.read_csv(filepath, sep=r"\s+", engine="python", comment='#', names=columns, usecols=[0, 1, 6, 11, 13, 14])
 
 	# Convert log values to their actual values
 	data['L'] = 10**data['log_L']
@@ -177,7 +178,7 @@ def fetch_stellar_properties(minit, age_years, directory, stmodsdir=STMODS_DIR):
 	
 		# Load the provided CSV file and skip initial header rows
 		file_path = stmodsdir+'BHAC15_tracks.csv'
-		df_clean = pd.read_csv(file_path, comment='!', delim_whitespace=True)
+		df_clean = pd.read_csv(file_path, comment='!', sep=r"\s+", engine="python")
 
 		# Add appropriate column headers based on the description given
 		column_names = [
@@ -212,7 +213,7 @@ def fetch_stellar_properties(minit, age_years, directory, stmodsdir=STMODS_DIR):
 		interpolated_logL = griddata(points, logL_values, (log_mass_target, log_age_target), method='linear')
 		interpolated_radius = griddata(points, radius_values, (log_mass_target, log_age_target), method='linear')
 
-		return interpolated_teff, interpolated_logg, interpolated_logL, interpolated_radius
+		return interpolated_teff, interpolated_logg, interpolated_logL, interpolated_radius, minit
 
 def find_all_mass_files(directory, stmodsdir=STMODS_DIR):
     """
@@ -449,7 +450,7 @@ def load_observational_data(file_path):
     ]
     
     # Load the data into a DataFrame
-    df = pd.read_csv(file_path, delim_whitespace=True, names=column_names, skiprows=1)
+    df = pd.read_csv(file_path, sep=r"\s+", engine="python", names=column_names, skiprows=1)
     
     # Extract the relevant columns
     extracted_data = df[["Object", "Teff", "Ter", "logL", "logLerr"]]
@@ -558,10 +559,70 @@ def accretion_shock_spectrum_approx(M_star_sol, R_star_sol, M_dot_Msolyr, Tstar,
 	# Spectrum from the shock as a function of wavelength
 	spectrum = shock_flux(wavelength_A, T_coll, A_coll)
 
-	print('Normalisation:', L_acc / np.trapz(spectrum, wavelength_A))
-	spectrum *= L_acc / np.trapz(spectrum, wavelength_A)
+	print('Normalisation:', L_acc / np.trapezoid(spectrum, wavelength_A))
+	spectrum *= L_acc / np.trapezoid(spectrum, wavelength_A)
 
 	return spectrum
+
+
+def _get_atmosphere_spectrum(Teff, metallicity, log_g):
+	"""Try pysynphot grids, then stsynphot remote Phoenix, then blackbody.
+
+	Grid EUV (10-912 A) coverage notes:
+	  Phoenix     : 12.6 A lower limit (NLTE) — covers nearly the full EUV range.
+	  ck04/k93    : CDBS grid starts at 90.9 A; the ATLAS LTE code does compute there.
+	                Compared to Phoenix: agree within ~10-40% at 300-912 A, but underpredict
+	                by ~100x below 200 A (LTE vs NLTE ionisation).  Integrated EUV is
+	                dominated by the deep-EUV deficit — use Phoenix for EUV luminosities.
+	  Blackbody   : no Lyman continuum opacity — strict upper bound on EUV.
+	"""
+	# Models with reliable EUV coverage (short-wavelength cutoff < 20 A)
+	EUV_RELIABLE = {'phoenix', 'Phoenix (remote)'}
+
+	# Try pysynphot with locally available grids — Phoenix first
+	try:
+		import pysynphot as S
+		for grid in ('phoenix', 'ck04models', 'k93models'):
+			try:
+				sp = S.Icat(grid, Teff, metallicity, log_g)
+				if grid not in EUV_RELIABLE:
+					print(f'Warning: {grid} is an LTE model — EUV agrees with Phoenix above ~300 A but underpredicts by ~100x below 200 A.')
+				return sp.wave, sp.flux, grid
+			except Exception:
+				continue
+	except Exception:
+		pass
+
+	# Try stsynphot with remote STScI TRDS Phoenix grid
+	try:
+		import os as _os
+		_os.environ.setdefault('PYSYN_CDBS', 'https://ssb.stsci.edu/trds')
+		import stsynphot as stsyn
+		import warnings
+		with warnings.catch_warnings():
+			warnings.simplefilter('ignore')
+			sp = stsyn.grid_to_spec('phoenix', Teff, metallicity, log_g)
+		wave = sp.waveset.value  # Angstroms
+		# Convert PHOTLAM -> FLAM (erg/cm²/s/Å): multiply by hc/λ_cm
+		flux = sp(sp.waveset).value * 1.9864e-8 / wave
+		return wave, flux, 'Phoenix (remote)'
+	except Exception as e:
+		print('stsynphot remote failed:', e)
+
+	# Final fallback: blackbody — EUV completely unreliable (no Lyman opacity)
+	print('Warning: falling back to blackbody — EUV flux will be grossly overestimated.')
+	try:
+		import pysynphot as S
+		sp = S.BlackBody(Teff)
+		return sp.wave, sp.flux, 'Blackbody'
+	except Exception:
+		pass
+	# Minimal numpy blackbody if pysynphot is also unavailable
+	wave_bb = np.logspace(1, 6, 10000)          # 10 Å – 1 mm
+	x = 1.4388e8 / (wave_bb * Teff)             # hc/λkT  (λ in Å)
+	x = np.clip(x, 1e-6, 500.)
+	flux_bb = 2. * 6.626e-27 * (2.998e18)**2 / (wave_bb * 1e-8)**5 / (np.exp(x) - 1.) * 1e-8
+	return wave_bb, flux_bb, 'Blackbody'
 
 
 def get_spectra(mstar, age, metallicity=0.0, Mdot_acc=0.0, directory='MIST_v1.2_feh_p0.00_afe_p0.0_vvcrit0.4_EEPS', stmodsdir=STMODS_DIR,return_wavunits=False):
@@ -574,41 +635,19 @@ def get_spectra(mstar, age, metallicity=0.0, Mdot_acc=0.0, directory='MIST_v1.2_
 	Teff, log_g, log_L, R, star_mass = fetch_stellar_properties(mstar, age*1e6, directory, stmodsdir=stmodsdir)
 	print('Stmod output:', Teff, log_g, log_L, R, star_mass)
 	
-	# Compute the stellar spectrum using Castelli & Kurucz atmosphere models
-	sp = S.Icat('phoenix', Teff, metallicity, log_g)
-	atm_mod = 'Phoenix'
-	
-	"""try:
-		try:
-			print('Trying phoenix model...')
-			sp = S.Icat('phoenix', Teff, metallicity, log_g)
-			atm_mod = 'Phoenix'
-		except:
-			print('Trying CK04 model...')
-			atm_mod = 'Castelli & Kurucz 2004'
-			sp = S.Icat('ck04models', Teff, metallicity, log_g)
-	except:
-		try:
-			print('Trying K93 model... ')
-			sp = S.Icat('k93models', Teff, metallicity, log_g)
-			atm_mod = 'Kurucz 1993'
-		except:
-			print('Warning: using blackbody spectrum because stellar parameters outside of atmosphere model range')
-			sp = S.BlackBody(Teff)
-			atm_mod = 'Blackbody'"""
+	# Compute the stellar spectrum: try pysynphot grids, then stsynphot remote, then blackbody
+	sp_wave, sp_flux_raw, atm_mod = _get_atmosphere_spectrum(Teff, metallicity, log_g)
 
 
-	#sp = S.Icat('k93models', Teff, metallicity, log_g)
-	
-	#Renormalize given the stellar luminosity 
-	Ltot = np.trapz(sp.flux*np.pi*4.0*R*R*Rsol*Rsol, sp.wave)
-	
+	#Renormalize given the stellar luminosity
+	Ltot = np.trapezoid(sp_flux_raw*np.pi*4.0*R*R*Rsol*Rsol, sp_wave)
+
 	Lnorm = Lsol*10.**log_L / Ltot
 
-	flux = sp.flux
+	flux = sp_flux_raw
 	facc = 0.0
 	if Mdot_acc>0.0:
-		facc = accretion_shock_spectrum_approx(star_mass, R, Mdot_acc, Teff, sp.wave, f=0.01)/(4.*np.pi*R*R*Rsol*Rsol)
+		facc = accretion_shock_spectrum_approx(star_mass, R, Mdot_acc, Teff, sp_wave, f=0.01)/(4.*np.pi*R*R*Rsol*Rsol)
 		"""plt.plot(sp.wave, facc)
 		plt.plot(sp.wave, sp.flux*Lnorm)
 
@@ -625,9 +664,9 @@ def get_spectra(mstar, age, metallicity=0.0, Mdot_acc=0.0, directory='MIST_v1.2_
 	os.chdir(cwd)
 
 	if return_wavunits:
-		return sp.wave, flux*Lnorm+facc, R*Rsol, atm_mod, sp.waveunits.name 
+		return sp_wave, flux*Lnorm+facc, R*Rsol, atm_mod, 'angstrom'
 	else:
-		return sp.wave, flux*Lnorm+facc, R*Rsol, atm_mod
+		return sp_wave, flux*Lnorm+facc, R*Rsol, atm_mod
 
 def compute_luminosity(wave, flux, Rstar, wavelength_start=0.0, wavelength_end = np.inf):
 	"""
@@ -646,13 +685,13 @@ def compute_luminosity(wave, flux, Rstar, wavelength_start=0.0, wavelength_end =
 	mask = (wave >= wavelength_start) & (wave <= wavelength_end)
 
 	# Integrate the flux over the selected wavelength range
-	integrated_flux = np.trapz(flux[mask]*4.*np.pi*Rstar*Rstar, wave[mask])
+	integrated_flux = np.trapezoid(flux[mask]*4.*np.pi*Rstar*Rstar, wave[mask])
 
 
 	# Integrate the flux over the selected wavelength range
-	integrated_flux_all = np.trapz(flux*4.*np.pi*Rstar*Rstar, wave)
+	integrated_flux_all = np.trapezoid(flux*4.*np.pi*Rstar*Rstar, wave)
 
-	mean_energy = np.trapz(flux[mask]*4.*np.pi*Rstar*Rstar*(12398.0/wave[mask]), wave[mask])/integrated_flux
+	mean_energy = np.trapezoid(flux[mask]*4.*np.pi*Rstar*Rstar*(12398.0/wave[mask]), wave[mask])/integrated_flux
 	
 	# Convert to luminosity (erg/s)
 	# Note: The factor of 4πR^2 is already included in the flux normalization, 
@@ -819,7 +858,7 @@ def compute_fluxes_at_coordinate(csv_path, ra_deg, dec_deg, distance_pc):
 def compute_fluxes_for_all_stars_filetype1(Ostars_file , discs_file, distance_pc):
 
 	# Load the Pis24_discs.dat file
-	discs_df = pd.read_csv(discs_file, delim_whitespace=True)
+	discs_df = pd.read_csv(discs_file, sep=r"\s+", engine="python")
 
 	# Convert RA and Dec from J2000 format to degrees
 	discs_df['ra_deg'] = discs_df['ra'].apply(lambda x: SkyCoord(x, discs_df['dec'][discs_df['ra'] == x].values[0], unit=(u.hourangle, u.deg)).ra.degree)
@@ -1044,49 +1083,42 @@ if __name__=='__main__':
 	
 	exit()"""
 
+	# Pis24 data files are in the pis24/ subfolder
+	pis24_dir = os.path.join(os.path.dirname(__file__), 'pis24')
+
 	redo_massage=False
 	redo_massage_UV=True
-	directory = 'MIST_v1.2_feh_p0.00_afe_p0.0_vvcrit0.4_EEPS'  
-	obs_file_path = 'Pis24_Ostars.dat'
-	observational_data = load_observational_data(obs_file_path)
-	if not os.path.isfile('mass_age.csv') or redo_massage:
-		ma_df = plot_all_isochrones(directory, [0.3, 0.5, 1.0, 2.0, 3.0, 5.0, 10.0, 20.0], mlims=[10., 90.], observational_data=observational_data)
-	else:
-		ma_df = pd.read_csv('mass_age.csv', delimiter=',', header=0)
-	
-	if not os.path.isfile('mass_age_UV.csv') or redo_massage_UV:
-		maL_df = compute_spectra_for_table(ma_df, directory=directory)
-	else:
-		maL_df = pd.read_csv('mass_age_UV.csv', delimiter=',', header=0)
+	directory = 'MIST_v1.2_feh_p0.00_afe_p0.0_vvcrit0.4_EEPS'
+	obs_file_path = os.path.join(pis24_dir, 'Pis24_Ostars.dat')
+	mass_age_path = os.path.join(pis24_dir, 'mass_age.csv')
+	ostars_wuv_path = os.path.join(pis24_dir, 'Pis24_Ostars_wUV.csv')
 
-	# Load the Pis24_Ostars.dat file (assuming it's space-separated or tab-separated)
-	ostars_df = pd.read_csv('Pis24_Ostars.dat', delim_whitespace=True)
-	# Merge the two DataFrames based on a common key (e.g., 'Object' or 'Star' name)
-	# Assuming the key column in both files is named 'Object'
+	observational_data = load_observational_data(obs_file_path)
+	if not os.path.isfile(mass_age_path) or redo_massage:
+		ma_df = plot_all_isochrones(directory, [0.3, 0.5, 1.0, 2.0, 3.0, 5.0, 10.0, 20.0], mlims=[10., 90.], observational_data=observational_data)
+		ma_df.to_csv(mass_age_path, sep=',', index=False)
+	else:
+		ma_df = pd.read_csv(mass_age_path, delimiter=',', header=0)
+
+	if not os.path.isfile(os.path.join(pis24_dir, 'mass_age_UV.csv')) or redo_massage_UV:
+		maL_df = compute_spectra_for_table(ma_df, directory=directory)
+		maL_df.to_csv(os.path.join(pis24_dir, 'mass_age_UV.csv'), sep=',', index=False)
+	else:
+		maL_df = pd.read_csv(os.path.join(pis24_dir, 'mass_age_UV.csv'), delimiter=',', header=0)
+
+	ostars_df = pd.read_csv(obs_file_path, sep=r"\s+", engine="python")
 	merged_df = pd.merge(ostars_df, maL_df, on='Object', how='inner')
 	print(merged_df)
-	# Save the merged DataFrame to a new CSV file 
-	merged_df.to_csv('Pis24_Ostars_wUV.csv', sep=',', index=False)
+	merged_df.to_csv(ostars_wuv_path, sep=',', index=False)
 
+	distance_pc = 1690.0  # Kuhn et al. 2019
+	disc_fluxes = compute_fluxes_for_all_stars_filetype1(ostars_wuv_path, os.path.join(pis24_dir, 'Pis24_discs.dat'), distance_pc)
+	disc_fluxes.to_csv(os.path.join(pis24_dir, 'disc_fluxes_Pis24.csv'), sep=',', index=False)
 
-	distance_pc = 1690.0  # Kuhn et al. 2019 (not now, updated to XUE value)
-	disc_fluxes = compute_fluxes_for_all_stars_filetype1('Pis24_Ostars_wUV.csv', 'Pis24_discs.dat', distance_pc)
-	#disc_fluxes = compute_fluxes_for_all_stars_filetype2('Pis24_Ostars_wUV.csv', 'M_0.8_1.2_all_regions.csv', distance_pc)
-	disc_fluxes.to_csv('disc_fluxes_Pis24.csv', sep=',', index=False)
+	disc_fluxes_BN = compute_fluxes_for_all_stars_filetype1(ostars_wuv_path, os.path.join(pis24_dir, 'BN_discs.dat'), distance_pc)
+	disc_fluxes_BN.to_csv(os.path.join(pis24_dir, 'disc_fluxes_BN.csv'), sep=',', index=False)
 
-	disc_fluxes_BN = compute_fluxes_for_all_stars_filetype1('Pis24_Ostars_wUV.csv', 'BN_discs.dat', distance_pc)
-	disc_fluxes_BN.to_csv('disc_fluxes_BN.csv', sep=',', index=False)
-
-	disc_fluxes_N78 = compute_fluxes_for_all_stars_filetype1('Pis24_Ostars_wUV.csv', 'N78_discs.dat', distance_pc)
-	disc_fluxes_N78.to_csv('disc_fluxes_N78.csv', sep=',', index=False)
+	disc_fluxes_N78 = compute_fluxes_for_all_stars_filetype1(ostars_wuv_path, os.path.join(pis24_dir, 'N78_discs.dat'), distance_pc)
+	disc_fluxes_N78.to_csv(os.path.join(pis24_dir, 'disc_fluxes_N78.csv'), sep=',', index=False)
 
 	plot_fuv_flux_vs_distance(disc_fluxes, discs_df_sub1=disc_fluxes_BN, discs_df_sub2=disc_fluxes_N78)
-
-
-
-	# Replace the RA, Dec, and distance with your specific values
-	"""ra_deg = 260.0  # Example RA in degrees
-	dec_deg = -34.0  # Example Dec in degrees
-	distance_pc = 1770.0  # Example distance in parsecs
-	results = compute_fluxes_at_coordinate('Pis24_Ostars_wUV.csv', ra_deg, dec_deg, distance_pc)
-	print(results)"""

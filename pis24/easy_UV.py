@@ -59,7 +59,7 @@ def compute_fluxes_at_coordinate(csv_path, ra_deg, dec_deg, distance_pc):
 def compute_fluxes_for_all_stars(Ostars_file , discs_file, distance_pc):
 
 	# Load the Pis24_discs.dat file
-	discs_df = pd.read_csv(discs_file, delim_whitespace=True)
+	discs_df = pd.read_csv(discs_file, sep=r'\s+', engine='python')
 
 	# Convert RA and Dec from J2000 format to degrees
 	discs_df['ra_deg'] = discs_df['ra'].apply(lambda x: SkyCoord(x, discs_df['dec'][discs_df['ra'] == x].values[0], unit=(u.hourangle, u.deg)).ra.degree)
@@ -86,17 +86,14 @@ def compute_fluxes_for_all_stars(Ostars_file , discs_file, distance_pc):
 
 
 if __name__=='__main__':
+	import os
+	_here = os.path.dirname(os.path.abspath(__file__))
 
 	distance_pc = 2000  #  distance in parsecs
-	disc_fluxes = compute_fluxes_for_all_stars('Pis24_Ostars_wUV.csv', 'Pis24_discs.dat', distance_pc)
+	disc_fluxes = compute_fluxes_for_all_stars(
+		os.path.join(_here, 'Pis24_Ostars_wUV.csv'),
+		os.path.join(_here, 'Pis24_discs.dat'),
+		distance_pc
+	)
 
-
-	disc_fluxes.to_csv('disc_fluxes.csv', sep=',', index=False)
-
-
-	# Replace the RA, Dec, and distance with your specific values
-	"""ra_deg = 260.0  # Example RA in degrees
-	dec_deg = -34.0  # Example Dec in degrees
-	distance_pc = 2000.0  # Example distance in parsecs
-	results = compute_fluxes_at_coordinate('Pis24_Ostars_wUV.csv', ra_deg, dec_deg, distance_pc)
-	print(results)"""
+	disc_fluxes.to_csv(os.path.join(_here, 'disc_fluxes.csv'), sep=',', index=False)

@@ -117,7 +117,7 @@ def build_cluster_spectrum(age, m_min, m_max, N_stars, common_wave=None, directo
 		# Weight the flux by the number of stars in this mass bin
 		star_weight = weight[im]  # Normalization: each star contributes equally
  
-		Lum = np.trapz(4.*np.pi*radius*radius*flux, wave) # Normalise to give the total energy output from the star
+		Lum = np.trapezoid(4.*np.pi*radius*radius*flux, wave) # Normalise to give the total energy output from the star
 
 		if common_wave is None:
 			common_wave = wave
